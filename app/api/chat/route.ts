@@ -833,7 +833,7 @@ function rewriteLooksValid(out: string, roleTitle: string): boolean {
   const hasB = /Wersja B/i.test(out);
   const aBullets = [...baseBullets, ...fromBefore.map((l) => `- ${l}`)].slice(0, 6);
   const bBullets = extractBulletsFromSection(out, 'B');
-  return hasHeaders && hasA && hasB && aBullets.length >= 3 && bBullets.length >= 3 && out.includes('Chcesz poprawić kolejną rolę?');
+  return hasHeaders && hasA && hasB && aBullets.length >= 2 && bBullets.length >= 2 && out.includes('Chcesz poprawić kolejną rolę?');
 }
 
 function extractBulletsFromSection(out: string, which: 'A' | 'B'): string[] {
