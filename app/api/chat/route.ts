@@ -901,4 +901,3 @@ function shorten(s?: string): string {
   if (t.length <= 180) return t;
   return t.slice(0, 177).trim() + '…';
 }
-
