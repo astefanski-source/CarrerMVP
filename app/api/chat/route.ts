@@ -591,11 +591,22 @@ function computeRoleState(messages: Message[], roleTitle: string): { asked: Set<
   const asked = new Set<QuestionKind>();
   const declined = new Set<QuestionKind>();
   const startIdx = findRoleStartIndex(messages, roleTitle);
+
+  // --- POPRAWKA START ---
+  // Jeśli nie znaleziono początku dyskusji o roli, zwracamy pusty stan
+  if (startIdx === -1) {
+    return { asked, declined, askedTotal: 0 };
+  }
+  // --- POPRAWKA END ---
+
   let lastAsked: QuestionKind | null = null;
   let askedTotal = 0;
+  
   for (let i = startIdx; i < (messages?.length || 0); i++) {
     const m = messages[i];
+    if (!m) continue; // Dodatkowe zabezpieczenie
     const role = m.role;
+    // ... reszta kodu bez zmian ...
     const text = String(m.content ?? '');
     if (role === 'assistant') {
       const k = inferLastAskedKind(text);
