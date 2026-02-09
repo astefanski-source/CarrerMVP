@@ -168,7 +168,7 @@ export async function POST(req: NextRequest) {
 
     // 2. POTEM DECYDUJEMY O PYTANIU
     const nextQ = pickNextQuestion({ missing, notes }, state);
-const lastAskedKind = inferLastAskedKind(lastAssistantClean);
+const lastAskedKind = inferLastAskedKind(lastAssistant);
 const lastUserRaw = String(messages[messages.length - 1]?.content ?? '');
 const userDeclined = looksLikeDeclineAnswer(lastUserRaw);
 
