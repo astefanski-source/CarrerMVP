@@ -904,19 +904,20 @@ function buildDeterministicFallback(roleTitle: string, beforeText: string, facts
       .replace(/^Udział/i, 'Uczestniczyłem w')
       .trim();
 
-  // FIX: Definiujemy baseBullets NAJPIERW (przed użyciem w aBullets)
+  // 1. NAJPIERW DEFINIUJEMY ZMIENNE (baseBullets)
   const baseBullets = [
     facts.ACTIONS ? `- ${shorten(facts.ACTIONS)}` : '',
     facts.SCALE ? `- Skala: ${shorten(facts.SCALE)}` : '',
     facts.RESULT ? `- Efekt: ${shorten(facts.RESULT)}` : '',
   ].filter(Boolean);
 
-  // Potem pobieramy zdania z oryginału
+  // 2. POTEM DEFINIUJEMY fromBefore
   const fromBefore = lines.slice(2, 6).map((l) => l.replace(/^\-+\s*/, '').trim()).filter(Boolean);
 
-  // Teraz bezpiecznie łączymy (baseBullets już istnieje)
+  // 3. TERAZ MOŻEMY ICH UŻYĆ w aBullets
   const aBullets = [...baseBullets, ...fromBefore.map((l) => `- ${l}`)].slice(0, 6);
 
+  // 4. Budujemy bBullets
   const bBullets = aBullets
     .map((b) => `- ${verbify(b.replace(/^- /, '').trim())}`)
     .map((b) => b.replace(/- skala:/i, '- Skala:').replace(/- efekt:/i, '- Efekt:'))
@@ -934,6 +935,10 @@ function buildDeterministicFallback(roleTitle: string, beforeText: string, facts
     `Chcesz poprawić kolejną rolę?`,
   ].join('\n');
 }
+
+/** =========================
+ * Helpers
+ * ========================= */
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
