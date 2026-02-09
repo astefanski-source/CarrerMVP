@@ -633,19 +633,21 @@ function computeRoleState(messages: Message[], roleTitle: string): { asked: Set<
 function findRoleStartIndex(messages: Message[], roleTitle: string): number {
   const target = roleTitle.trim().toLowerCase();
   
+  // FIX: Poprawiony regex, który obsługuje "zacznijmy" (z końcówką 'my')
+  // Wcześniejsza wersja błędnie zakładała alternatywę j|my, co psuło dopasowanie
+  const regex = /zacznij(?:my)?\s+od\s+["„”']([^"„”']+?)["„”']/i;
+
   for (let i = (messages?.length || 0) - 1; i >= 0; i--) {
     const m = messages[i];
     if (!m || m.role !== 'assistant') continue;
-    
+
     const s = String(m.content ?? '');
-    
-    // Zamiast szukać konkretnego stringa w Regexie, łapiemy ogólny wzorzec 
-    // "zacznijmy od [COKOLWIEK]" i porównujemy to COKOLWIEK.
-    // To eliminuje problemy z escape'owaniem znaków specjalnych w tytule roli.
-    const match = s.match(/zaczni(?:j|my)\s+od\s+["„”']([^"„”']+?)["„”']/i);
-    
+    const match = s.match(regex);
+
     if (match && match[1]) {
        const foundTitle = match[1].trim().toLowerCase();
+       // Porównujemy znaleziony tytuł z szukanym string-do-stringa
+       // To eliminuje problemy z escape'owaniem znaków specjalnych w Regexie
        if (foundTitle === target) {
          return i;
        }
