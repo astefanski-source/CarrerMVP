@@ -831,7 +831,7 @@ function rewriteLooksValid(out: string, roleTitle: string): boolean {
     new RegExp(`===\\s*AFTER\\s*\\(${escapeRegex(roleTitle)}\\)\\s*===`, 'i').test(out);
   const hasA = /Wersja A/i.test(out);
   const hasB = /Wersja B/i.test(out);
-  const aBullets = extractBulletsFromSection(out, 'A');
+  const aBullets = [...baseBullets, ...fromBefore.map((l) => `- ${l}`)].slice(0, 6);
   const bBullets = extractBulletsFromSection(out, 'B');
   return hasHeaders && hasA && hasB && aBullets.length >= 3 && bBullets.length >= 3 && out.includes('Chcesz poprawić kolejną rolę?');
 }
