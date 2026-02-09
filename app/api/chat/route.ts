@@ -599,12 +599,26 @@ function eqRole(a: string, b: string): boolean {
  * ========================= */
 function inferLastAskedKind(text: string): QuestionKind | null {
   const t = String(text ?? '').toLowerCase();
+  
+  // 1. Najpierw wykluczamy komunikaty techniczne
   if (t.includes('wybierz rolę') || t.includes('1 / 2 / 3') || t.includes('wybierz 1') || t.includes('wpisz numer')) {
     return null;
   }
-  if (t.includes('co konkretnie ty zrobi') || t.includes('twoje działani')) return 'ACTIONS';
-  if (t.includes('skal') || t.includes('ile tego') || t.includes('wolumen') || t.includes('budżet') || t.includes('#')) return 'SCALE';
+
+  // 2. Najpierw sprawdzamy RESULT i SCALE (mają wyższy priorytet i bardziej unikalne słowa)
+  // Dzięki temu, nawet jak w pytaniu o wynik padnie słowo "zadania", to "efekt/wynik" wygra.
   if (t.includes('efekt') || t.includes('wynik') || t.includes('kpi') || t.includes('roas') || t.includes('sla')) return 'RESULT';
+  
+  if (t.includes('skal') || t.includes('ile tego') || t.includes('wolumen') || t.includes('budżet') || t.includes('#')) return 'SCALE';
+
+  // 3. Na końcu sprawdzamy ACTIONS (teraz z nowymi frazami)
+  if (
+    t.includes('co konkretnie ty zrobi') || 
+    t.includes('twoje działani') || 
+    t.includes('sprawczości') ||     // Dodane (literówka 'sprawczośc' poprawiona na 'sprawczości' dla pewności, choć includes łapie fragment)
+    t.includes('twoich zadań')       // Dodane
+  ) return 'ACTIONS';
+  
   return null;
 }
 
