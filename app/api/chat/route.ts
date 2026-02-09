@@ -897,19 +897,20 @@ function buildDeterministicFallback(roleTitle: string, beforeText: string, facts
       .replace(/^Udział/i, 'Uczestniczyłem w')
       .trim();
 
-  // 1. DEFINICJA baseBullets (To musi być tutaj!)
+  // FIX: Definiujemy baseBullets TUTAJ, żeby były dostępne dla aBullets
   const baseBullets = [
     facts.ACTIONS ? `- ${shorten(facts.ACTIONS)}` : '',
     facts.SCALE ? `- Skala: ${shorten(facts.SCALE)}` : '',
     facts.RESULT ? `- Efekt: ${shorten(facts.RESULT)}` : '',
   ].filter(Boolean);
 
-  // 2. Pobranie zdań z oryginału
+  // Pobranie zdań z oryginału
   const fromBefore = lines.slice(2, 6).map((l) => l.replace(/^\-+\s*/, '').trim()).filter(Boolean);
 
-  // 3. Połączenie (Teraz baseBullets jest już zdefiniowane, więc zadziała)
+  // Połączenie: fakty + oryginał
   const aBullets = [...baseBullets, ...fromBefore.map((l) => `- ${l}`)].slice(0, 6);
 
+  // Wersja B na podstawie A
   const bBullets = aBullets
     .map((b) => `- ${verbify(b.replace(/^- /, '').trim())}`)
     .map((b) => b.replace(/- skala:/i, '- Skala:').replace(/- efekt:/i, '- Efekt:'))
