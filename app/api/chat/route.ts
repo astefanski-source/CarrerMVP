@@ -168,15 +168,7 @@ export async function POST(req: NextRequest) {
 
     // 2. POTEM DECYDUJEMY O PYTANIU
     const nextQ = pickNextQuestion({ missing, notes }, state);
-const lastAskedKind = inferLastAskedKind(lastAssistant);
-const lastUserRaw = String(messages[messages.length - 1]?.content ?? '');
-const userDeclined = looksLikeDeclineAnswer(lastUserRaw);
 
-if (userDeclined && (lastAskedKind === 'SCALE' || lastAskedKind === 'RESULT')) {
-  const profile = getRoleProfile(activeRole.title, cvTextEffective);
-  const followup = buildProxyFollowup(lastAskedKind, profile);
-  return NextResponse.json({ assistantText: normalizeForUI(followup, 1) });
-}
     if (nextQ) {
         // Określamy profil na podstawie aktywnej roli
         const profile = getRoleProfile(activeRole.title, roleBlockText);
