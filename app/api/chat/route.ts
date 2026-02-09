@@ -935,6 +935,10 @@ function buildDeterministicFallback(roleTitle: string, beforeText: string, facts
   ].join('\n');
 }
 
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function shorten(s?: string): string {
   const t = preprocessCvSource(s || '');
   if (t.length <= 180) return t;
