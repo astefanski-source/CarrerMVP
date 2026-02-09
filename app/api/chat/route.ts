@@ -635,25 +635,23 @@ function findRoleStartIndex(messages: Message[], roleTitle: string): number {
 }
 
 function buildUserFactsFromRoleConversation(messages: Message[], roleTitle: string): Partial<Record<QuestionKind, string>> {
-  // 1. Znajdź moment, w którym Asystent powiedział "Zacznijmy od [Ta Rola]"
   const startIdx = findRoleStartIndex(messages, roleTitle);
-  
-  // Jeśli nie znaleziono startu tej konkretnej roli, zwracamy pusty obiekt (bezpiecznik)
   if (startIdx === -1) return {};
 
   const facts: Partial<Record<QuestionKind, string>> = {};
   let pending: QuestionKind | null = null;
 
-  // 2. Analizujemy tylko wiadomości OD TEGO MOMENTU w dół
   for (let i = startIdx; i < (messages?.length || 0); i++) {
     const m = messages[i];
+    // FIX: Dodajemy sprawdzenie, czy 'm' istnieje, aby uniknąć błędu "reading 'role' of undefined"
+    if (!m) continue;
+
     if (m.role === 'assistant') {
       pending = inferLastAskedKind(m.content);
     } else if (m.role === 'user') {
       if (pending) {
         const ans = preprocessCvSource(m.content);
         if (ans && !looksLikeDeclineAnswer(ans)) {
-          // Zapisujemy fakt tylko jeśli user nie odmówił
           if (!facts[pending]) facts[pending] = ans;
         }
         pending = null;
