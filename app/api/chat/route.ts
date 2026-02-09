@@ -17,54 +17,6 @@ interface RequestBody {
 type Mode = 'AUDIT_ONLY' | 'NORMAL';
 
 /** =========================
- *  Input validation (FIX #4)
- *  ========================= */
-function coerceString(v: unknown) {
-  if (typeof v === 'string') return v;
-  if (v === null || v === undefined) return '';
-  try {
-    return String(v);
-  } catch {
-    return '';
-  }
-}
-
-function isRoleAllowed(v: unknown): v is Message['role'] {
-  return v === 'user' || v === 'assistant';
-}
-
-function validateRequestBody(raw: any): { ok: true; body: RequestBody } | { ok: false; error: string; status: number } {
-  if (!raw || typeof raw !== 'object') return { ok: false, error: 'Invalid JSON body', status: 400 };
-
-  const rawMessages = (raw as any).messages;
-  if (!Array.isArray(rawMessages)) return { ok: false, error: 'Messages array is required', status: 400 };
-
-  // sanitize messages (drop unknown roles)
-  const messages: Message[] = rawMessages
-    .map((m: any) => {
-      const role = m?.role;
-      if (!isRoleAllowed(role)) return null;
-      const content = coerceString(m?.content ?? '');
-      return { role, content };
-    })
-    .filter(Boolean) as Message[];
-
-  if (messages.length === 0) return { ok: false, error: 'Messages must include at least 1 valid item', status: 400 };
-
-  const userCount = messages.filter((m) => m.role === 'user' && m.content.trim()).length;
-  if (userCount === 0) return { ok: false, error: 'At least one user message is required', status: 400 };
-
-  const cvText = typeof (raw as any).cvText === 'string' ? (raw as any).cvText : undefined;
-  const selectedRoleTitle = typeof (raw as any).selectedRoleTitle === 'string' ? (raw as any).selectedRoleTitle : undefined;
-
-  // soft cap (prevents accidental huge payloads)
-  const MAX_MESSAGES = 120;
-  const safeMessages = messages.slice(-MAX_MESSAGES);
-
-  return { ok: true, body: { messages: safeMessages, cvText, selectedRoleTitle } };
-}
-
-/** =========================
  *  Text utils
  *  ========================= */
 function normalizeNewlines(text: string) {
@@ -93,156 +45,15 @@ function stripLeadingIndentAllLines(text: string) {
     .map((l) => l.replace(/^[ \t]{2,}/g, ''))
     .join('\n');
 }
-function enforceBeforeBlock(txt: string, roleTitle: string, roleBlockText: string): string {
-  let t = normalizeNewlines(txt || '');
-
-  // jeśli nie mamy pewnego bloku roli -> NIE nadpisuj BEFORE
-  const before = normalizeNewlines(roleBlockText || '').trim();
-  if (!before) return t;
-
-  const header = `=== BEFORE (${roleTitle}) ===`;
-  const afterHeaderRe = /^===\s*AFTER\s*\([^)]+\)\s*===\s*$/mi;
-
-  const lines = t.split('\n');
-  const idxBefore = lines.findIndex((l) => l.trim() === header);
-  if (idxBefore === -1) return t;
-
-  // znajdź start treści BEFORE (linia po nagłówku)
-  const start = idxBefore + 1;
-
-  // znajdź koniec treści BEFORE (pierwsza linia "=== AFTER (...) ===")
-  let end = lines.length;
-  for (let i = start; i < lines.length; i++) {
-    if (afterHeaderRe.test(lines[i])) {
-      end = i;
-      break;
-    }
-  }
-
-  // podmień zawartość BEFORE na dokładny blok roli
-  const newLines = [
-    ...lines.slice(0, start),
-    ...before.split('\n'),
-    ...lines.slice(end),
-  ];
-
-  return newLines.join('\n');
-}
 
 function stripFencedCodeBlock(text: string) {
   const t = normalizeNewlines(text).trim();
   const m = t.match(/^```(?:\w+)?\n([\s\S]*?)\n```$/);
   return m ? m[1].trim() : t;
 }
-function buildDeterministicRewriteFallback(params: {
-  roleTitle: string;
-  roleBlockText: string;
-  userFactsText: string;
-}): string {
-  const { roleTitle, roleBlockText, userFactsText } = params;
 
-  const clean = (s: any) => String(s || '').replace(/\s+/g, ' ').trim();
-
-  const linesAll = `${roleBlockText}\n${userFactsText}`
-    .split('\n')
-    .map((l) => clean(l))
-    .filter(Boolean);
-  const isGarbage = (l: string) => userNonAnswer(l) || /^(\.\.\.|…)+$/.test(l.trim());
-
-  const linesAllClean = linesAll.filter((l) => !isGarbage(l));
-
-  // usuń linię nagłówka roli (zwykle zawiera daty i "|")
-  const headerLike = (l: string) => l.includes('|') || /\b\d{2}\.\d{4}\b|\b\d{4}\b/.test(l);
-  const contentLines = linesAllClean.filter((l) => l !== roleTitle && !headerLike(l));
-
-  // wyciągnij “Skala:” i “Wynik:” jeśli są
-  const scaleLine =
-    linesAllClean.find((l) => /^skala\s*:/i.test(l)) ||
-    linesAllClean.find((l) => /\b(pr\s*\/\s*mies|ticket|sprint|wdroż|deploy|test case|zgłosze[nń]|bug)\b/i.test(l));
-
-  const resultLine =
-    linesAllClean.find((l) => /^(wynik|result)\s*:/i.test(l)) ||
-    linesAllClean.find((l) => /\b(error rate|mttr|uptime|defect leakage|pass rate|csat|nps|sla|cac|cpa|roas|ctr|cr)\b/i.test(l));
-
-  // “proces / narzędzia” – tylko jeśli w źródłach coś faktycznie jest
-  const toolHints = [
-    'Jira', 'Git', 'GitHub', 'GitLab', 'Bitbucket', 'Confluence',
-    'TestRail', 'Zephyr', 'Xray', 'Docker', 'Kubernetes'
-  ];
-
-  const toolsFound = toolHints.filter((t) =>
-    linesAllClean.some((l) => l.toLowerCase().includes(t.toLowerCase()))
-  );
-
-  // actions: bierz 2–4 pierwsze sensowne linie opisu (bez Skala/Wynik)
-  const actionCandidates = contentLines.filter(
-    (l) => !/^skala\s*:/i.test(l) && !/^(wynik|result)\s*:/i.test(l)
-  );
-
-  const actions = actionCandidates.slice(0, 4);
-  const aBullets: string[] = [];
-
-  // A: actions
-  for (const a of actions) aBullets.push(`- ${a}`);
-
-  // A: skala/wynik/process (tylko jeśli mamy)
-  if (scaleLine && /^skala\s*:/i.test(scaleLine)) aBullets.push(`- ${scaleLine}`);
-  if (resultLine && (/^(wynik|result)\s*:/i.test(resultLine) || resultLine.includes('%') || /\d/.test(resultLine)))
-    aBullets.push(`- ${resultLine}`);
-
-  if (toolsFound.length) aBullets.push(`- Proces / narzędzia: ${toolsFound.join(', ')}`);
-
-  // domknij do 3–8 bulletów (bez dodawania faktów: powtarzamy istniejące)
-  while (aBullets.length < 3 && actionCandidates.length) {
-    const extra = actionCandidates[aBullets.length - 1];
-    if (extra) aBullets.push(`- ${extra}`);
-    else break;
-  }
-  const aFinal = aBullets.slice(0, 8);
-
-  // B: ma się różnić od A -> zmieniamy kolejność + lekko wzmacniamy czasowniki (bez dopisywania faktów)
-  const bBullets: string[] = [];
-
-  const actionsRotated = actions.length > 1 ? [...actions.slice(1), actions[0]] : actions;
-  for (const a of actionsRotated) {
-    // minimalna modyfikacja słowna, bez nowych danych
-    bBullets.push(`- Realizacja: ${a}`);
-  }
-  if (scaleLine && /^skala\s*:/i.test(scaleLine)) bBullets.push(`- ${scaleLine}`);
-  if (resultLine && (/^(wynik|result)\s*:/i.test(resultLine) || resultLine.includes('%') || /\d/.test(resultLine)))
-    bBullets.push(`- ${resultLine}`);
-  if (toolsFound.length) bBullets.push(`- Proces / narzędzia: ${toolsFound.join(', ')}`);
-
-  while (bBullets.length < 3 && actionCandidates.length) {
-    const extra = actionCandidates[bBullets.length - 1];
-    if (extra) bBullets.push(`- Realizacja: ${extra}`);
-    else break;
-  }
-  const bFinal = bBullets.slice(0, 8);
-
-  // BEFORE: 4–12 linii z oryginalnego opisu roli (bez metadanych CV)
-  const beforeLines = contentLines.slice(0, 12);
-  while (beforeLines.length < 4 && linesAllClean.length) {
-    // jako last resort, dobijamy z całości (ale nadal bez headerów)
-    const extra = contentLines[beforeLines.length] || '';
-    if (extra) beforeLines.push(extra);
-    else break;
-  }
-
-  return [
-    `=== BEFORE (${roleTitle}) ===`,
-    ...beforeLines.slice(0, 12),
-    `=== AFTER (${roleTitle}) ===`,
-    `Wersja A (bezpieczna):`,
-    ...aFinal,
-    `Wersja B (mocniejsza):`,
-    ...bFinal,
-    ``,
-    `Chcesz poprawić kolejną rolę?`,
-  ].join('\n');
-}
 /**
- * strip simple line-level markdown decorations often present in CV pastes
+ * NEW: strip simple line-level markdown decorations often present in CV pastes
  * Examples:
  *   *Firma ...*  -> Firma ...
  *   **Title**    -> Title
@@ -253,7 +64,9 @@ function stripMarkdownDecorationsAllLines(text: string) {
   const stripWrap = (line: string) => {
     let t = line.trimEnd();
 
-    // remove italics/bold wrapping of the entire line (keep actual bullets handled elsewhere)
+    // remove leading bullets that are only decoration (keep real bullets handled elsewhere)
+    // keep "- " / "• " / "* " bullets
+    // Here we only strip italics/bold wrapping of the entire line.
     t = t.replace(/^\s*\*{1,3}(.+?)\*{1,3}\s*$/g, '$1');
     t = t.replace(/^\s*_{1,3}(.+?)_{1,3}\s*$/g, '$1');
 
@@ -267,7 +80,8 @@ function stripMarkdownDecorationsAllLines(text: string) {
 }
 
 /** =========================
- *  Deglue date tokens + normalize date dashes
+ *  NEW: Deglue date tokens + normalize date dashes
+ *  - fixes: Role2020–presentbody, obecnieOpis, 2020-2024 etc.
  *  ========================= */
 function deglueDateTokens(text: string) {
   let t = normalizeNewlines(text || '');
@@ -286,10 +100,16 @@ function deglueDateTokens(text: string) {
   );
 
   // Ensure space before obecnie/present if glued to previous token
-  t = t.replace(/([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż0-9])(?=(obecnie|present)\b)/gi, '$1 ');
+  t = t.replace(
+    /([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż0-9])(?=(obecnie|present)\b)/gi,
+    '$1 '
+  );
 
   // Ensure space after obecnie/present if glued to following letters (fix presentbody)
-  t = t.replace(/(obecnie|present)(?=[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż])/gi, '$1 ');
+  t = t.replace(
+    /(obecnie|present)(?=[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż])/gi,
+    '$1 '
+  );
 
   return t;
 }
@@ -299,6 +119,7 @@ function normalizeDateDashes(text: string) {
   if (!t.trim()) return t;
 
   // normalize "2020-2024" / "03.2021–obecnie" / "03/2021 - present" into "… – …"
+  // cover both '-' and '–' and '—'
   t = t.replace(
     /(\b(?:0?[1-9]|1[0-2])[./-](?:19|20)\d{2}\b|\b(?:19|20)\d{2}\b)\s*[-–—]\s*(\b(?:0?[1-9]|1[0-2])[./-](?:19|20)\d{2}\b|\b(?:19|20)\d{2}\b|\bobecnie\b|\bpresent\b)/gi,
     (_m, a, b) => `${a} – ${b}`
@@ -314,7 +135,8 @@ function normalizeDateDashes(text: string) {
 }
 
 /** =========================
- *  Dedupe lines (consecutive)
+ *  NEW: Dedupe lines as a separate step
+ *  - safe: removes only consecutive duplicates after normalization
  *  ========================= */
 function dedupeConsecutiveLines(text: string) {
   const lines = normalizeNewlines(text || '').split('\n');
@@ -366,8 +188,8 @@ function extractDatesFromLine(line: string) {
 }
 
 /** =========================
- *  Split inline header: "Role - Company 2020 – present body"
- *  (named groups to avoid group-count bugs)
+ *  NEW: Split inline header: "Role - Company 2020 – present body"
+ *  Fixes the “capturing-group-count depends on end” bug by using named groups.
  *  ========================= */
 function splitHeaderDatesAndInlineBody(line: string): {
   headerPart: string;
@@ -377,6 +199,9 @@ function splitHeaderDatesAndInlineBody(line: string): {
   const t = normalizeDateDashes(deglueDateTokens((line || '').trim()));
   if (!t) return null;
 
+  // Accept:
+  // - MM/YYYY – (MM/YYYY|YYYY|obecnie|present)
+  // - YYYY – (YYYY|obecnie|present)
   const re =
     /^(?<before>.+?)\s+(?<range>(?<start>(?:\d{2}[./-]\d{4}|\b(?:19|20)\d{2}\b))\s*[–-]\s*(?<end>(?:\d{2}[./-]\d{4}|\b(?:19|20)\d{2}\b|obecnie|present)))\s*(?<after>.*)$/i;
 
@@ -388,14 +213,16 @@ function splitHeaderDatesAndInlineBody(line: string): {
   const inlineBody = (m.groups.after || '').trim();
 
   if (!headerPart || !dates) return null;
+  // avoid false positives: header too short
   if (headerPart.length < 3) return null;
 
   return { headerPart, dates, inlineBody };
 }
 
 /** =========================
- *  Header with trailing single start date:
- *   "… - Company 06/2024" + body starts with "Obecnie ..."
+ *  NEW: handle header with trailing single start date:
+ *   "E-COMMERCE ... - Company 06/2024"
+ *   and body starts with "Obecnie ..."
  *  ========================= */
 function splitTrailingStartDate(line: string): { headerPart: string; startDate: string } | null {
   const t = normalizeDateDashes(deglueDateTokens((line || '').trim()));
@@ -412,7 +239,7 @@ function splitTrailingStartDate(line: string): { headerPart: string; startDate: 
 }
 
 /** =========================
- *  Single-paragraph paste fixer
+ *  NEW: Fix single-paragraph pastes
  *  ========================= */
 function countDateRanges(text: string) {
   const t = normalizeDateDashes(deglueDateTokens(normalizeNewlines(text || '')));
@@ -432,21 +259,16 @@ function injectCvLineBreaks(text: string) {
   if (t.trim().length < 120) return t;
   if (dr === 0) return t;
 
-  // break around date ranges
-  // FIX #1: correct callback args (previously used offset as group)
   t = t.replace(
     /(\b\d{2}[./-]\d{4}\b|\b\d{2}\/\d{4}\b|\b(?:19|20)\d{2}\b)\s*[–-]\s*(obecnie|present|\b\d{2}[./-]\d{4}\b|\b\d{2}\/\d{4}\b|\b(?:19|20)\d{2}\b)/gi,
     (_m, a, b) => `\n${a} – ${b}\n`
   );
 
-  // break BEFORE obvious ALLCAPS headers ONLY when they are preceded by sentence punctuation,
-  // so we don't split inside a single header like "E-COMMERCE / MARKETPLACE SPECIALIST - ...".
-  t = t.replace(
-    /([.!?…:;)])\s+(?=[A-ZĄĆĘŁŃÓŚŹŻ][A-ZĄĆĘŁŃÓŚŹŻ0-9 /&.]{2,}\s(?:\-|–)\s)/g,
-    '$1\n'
-  );
+  // break before obvious headers (ALLCAPS-ish with dash separator)
+  t = t.replace(/\s+(?=[A-ZĄĆĘŁŃÓŚŹŻ][A-ZĄĆĘŁŃÓŚŹŻ0-9 /&.]{2,}\s(?:\-|–)\s)/g, '\n');
 
   t = collapseBlankLines(t, 1);
+
   return t.trim();
 }
 
@@ -539,37 +361,6 @@ function preprocessCvSource(text: string) {
 
   return t.trim();
 }
-// 1) jeśli extractRoleBlock zwróci “za dużo” (wiele ról / całe CV),
-// to do pytań i heurystyk używamy tylko bezpiecznego scope
-function sanitizeRoleScopeText(roleBlockText: string, roleTitle: string): string {
-  const t = preprocessCvSource(roleBlockText || '').trim();
-  const fallback = preprocessCvSource(roleTitle || '').trim() || 'WYBRANA ROLA';
-  if (!t) return fallback;
-
-  const dateRangeRe = /\b\d{2}[./]\d{4}\s*[-–—]\s*(obecnie|present|current|\d{2}[./]\d{4})\b/gi;
-  const dateRanges = (t.match(dateRangeRe) || []).length;
-  if (dateRanges >= 2) return fallback;
-
-  if (t.length > 2400) return fallback;
-
-  return t;
-}
-
-// 2) tytuł roli ma pierwszeństwo (najstabilniejszy sygnał domeny)
-function inferRoleDomainWithTitleOverride(roleTitle: string, roleText: string) {
-  const title = (roleTitle || '').toLowerCase();
-
-  if (/(project manager|kierownik projektu|koordynator projektu|\bpm\b|scrum master|product owner)/i.test(title)) return 'PM';
-  if (/(developer|programist|software|frontend|backend|full.?stack|engineer)/i.test(title)) return 'DEV';
-  if (/(qa|tester|testowanie|quality assurance)/i.test(title)) return 'QA';
-  if (/(customer support|obs(ł|l)uga klienta|helpdesk|service desk)/i.test(title)) return 'SUPPORT';
-  if (/(admin|administrac|office|back.?office|operacj)/i.test(title)) return 'ADMIN';
-  if (/(marketing|performance|paid|google ads|meta ads|seo|social media)/i.test(title)) return 'MARKETING';
-  if (/(e-?commerce|marketplace|allegro|amazon|shopify)/i.test(title)) return 'ECOM';
-  if (/(sprzeda|sales|account manager|key account|\bkam\b|b2b)/i.test(title)) return 'SALES';
-
-  return inferRoleDomain(roleTitle, roleText);
-}
 
 /** =========================
  *  Role parser
@@ -588,13 +379,10 @@ function isBulletLine(line: string) {
 }
 
 function looksLikeActionSentence(line: string) {
-  // FIX #3 (heurystyki): nominalizacje jak "Uruchomienie..." traktujemy jako body, nie header
-  const raw = (line || '').trim().toLowerCase();
-  if (raw.length < 12) return false;
+  const t = (line || '').trim().toLowerCase();
+  if (t.length < 12) return false;
 
-  const t = raw.replace(/^(obecnie|currently)\s+/i, '');
-
-  return /^(prowadzen|zarzadz|koordyn|wdra|uruchom|optymaliz|analiz|monitor|raport|audyt|tworz|zbudow|standaryz|automatyz|planow|priorytet|manage|led|deliver|own|build|optimi[sz]e|analy[sz]e|report|coordinate|implement)/i.test(
+  return /^(prowadzen|zarzadz|koordyn|wdra|optymaliz|analiz|monitor|raport|audyt|tworz|zbudow|standaryz|automatyz|planow|priorytet|manage|led|deliver|own|build|optimi[sz]e|analy[sz]e|report|coordinate|implement)/i.test(
     t
   );
 }
@@ -623,7 +411,8 @@ function hasDateInSameLine(line: string) {
 
 function hasJobTitleKeyword(line: string) {
   const t = (line || '').toLowerCase();
-  return /\b(specjalist|asystent|manager|kierownik|dyrektor|analityk|koordynator|in[żz]ynier|project|account|sales|sprzeda[żz]|owner|lead|consultant|pm\b|po\b)\b/i.test(
+  // PL + EN (minimal, MVP-safe)
+  return /\b(specjalist|asystent|manager|kierownik|dyrektor|analityk|koordynator|in[żz]ynier|project|account|sales|sprzeda[żz]|e-?commerce|marketplace|owner|lead|consultant|pm\b|po\b)\b/i.test(
     t
   );
 }
@@ -632,6 +421,7 @@ function looksLikeCompanyLocationLine(line: string) {
   const t = (line || '').trim();
   if (!t) return false;
 
+  // very common pattern: "Firma..., Miasto | 03.2021 – obecnie"
   const hasCityish = /,\s*[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż-]{2,}/.test(t);
   const hasPipe = /\s\|\s/.test(t);
   const hasDate = isDateLineLike(t) || !!extractDatesFromLine(t);
@@ -658,7 +448,13 @@ function isTitleCaseish(line: string) {
 }
 
 /**
- * Header rule (tightened to prevent action lines from becoming “roles”)
+ * Header rule (fixed):
+ * - never treat company/location line as header
+ * - require strong signals:
+ *   - date in next line AND (dashSep OR suffix OR ALLCAPS OR titlecase-ish OR jobKeyword)
+ *   - OR inline date + dashSep + (suffix OR jobKeyword OR ALLCAPS)
+ *   - OR dashSep + suffix
+ *   - OR dashSep + jobKeyword
  */
 function looksLikeRoleHeaderLine(line: string, nextLine: string) {
   const l = (line || '').trim();
@@ -668,7 +464,7 @@ function looksLikeRoleHeaderLine(line: string, nextLine: string) {
   if (isBulletLine(l)) return false;
   if (l.startsWith('(')) return false;
   if (/^[a-ząćęłńóśźż0-9]/.test(l)) return false;
-  if (looksLikeActionSentence(l)) return false; // FIX #3
+  if (looksLikeActionSentence(l)) return false;
   if (looksLikeCompanyLocationLine(l)) return false;
 
   const dashSep = hasDashSeparator(l);
@@ -684,15 +480,13 @@ function looksLikeRoleHeaderLine(line: string, nextLine: string) {
     return dashSep || co || caps || job || isTitleCaseish(l);
   }
 
-  if (dateInline && dashSep) return co || caps || (job && isTitleCaseish(l));
+  // inline date headers: require more than “pipe + date”
+  if (dateInline && dashSep) return co || job || caps;
   if (dashSep && co) return true;
+  if (dashSep && job) return true;
 
-  if (dashSep && job) {
-    if (l.length > 180) return false;
-    return caps || isTitleCaseish(l);
-  }
-
-  if (dashSep && l.length <= 180 && (co || caps || isTitleCaseish(l)) && job) return true;
+  // allow headers without explicit dates (ECOM regression): dashSep + (suffix OR job)
+  if (dashSep && (co || job || caps) && l.length <= 180) return true;
 
   return false;
 }
@@ -722,28 +516,11 @@ function splitTitleCompany(titleLine: string) {
   return { title: t, company: '' };
 }
 
-function isCompanyDatesLineLike(line: string): boolean {
-  const s = (line || '').trim();
-  if (!s) return false;
-
-  // ma separator i da się wyciągnąć zakres dat z dowolnego miejsca w linii
-  if (!s.includes('|')) return false;
-
-  const hasDates = !!extractDatesFromLine(s);
-  if (!hasDates) return false;
-
-  // typowe "firma, miasto | 01.2020 – 02.2021" / "*Firma..., | ...*"
-  // nie blokujemy tytułów typu "Specjalista ds. X | 01.2020 – 02.2021" — tym zajmie się splitTitleCompany
-  return true;
-}
-
 function parseExperienceIntoRoleBlocks(input: string): ParsedRoleBlock[] {
   const text = preprocessCvSource((input || '').trim());
   if (!text) return [];
 
-  const lines = normalizeNewlines(text)
-    .split('\n')
-    .map((l) => l.trimEnd());
+  const lines = normalizeNewlines(text).split('\n').map((l) => l.trimEnd());
 
   const blocks: ParsedRoleBlock[] = [];
   let i = 0;
@@ -752,7 +529,7 @@ function parseExperienceIntoRoleBlocks(input: string): ParsedRoleBlock[] {
     const lineRaw = (lines[i] || '').trim();
     const nextRaw = (lines[i + 1] || '').trim();
 
-    // Try inline header split first (Role ... | dates body)
+    // Try inline header split first (Role ... 2020 – present body)
     const inline = splitHeaderDatesAndInlineBody(lineRaw);
     if (inline) {
       const titleLine = inline.headerPart;
@@ -789,6 +566,7 @@ function parseExperienceIntoRoleBlocks(input: string): ParsedRoleBlock[] {
     let datesLine = '';
     let startBodyIdx = i + 1;
 
+    // If next line contains date range (even with company/location), attach as datesLine
     if (isDateLineLike(nextRaw)) {
       datesLine = nextRaw;
       startBodyIdx = i + 2;
@@ -820,7 +598,6 @@ function parseExperienceIntoRoleBlocks(input: string): ParsedRoleBlock[] {
 
     const raw = [titleLine, datesLine, ...bodyLines].filter(Boolean).join('\n').trim();
     blocks.push({ titleLine, title, company, datesLine, bodyLines, raw });
-
     i = j;
   }
 
@@ -831,35 +608,13 @@ function parseExperienceIntoRoleBlocks(input: string): ParsedRoleBlock[] {
  *  Audit detection
  *  ========================= */
 function isAudit(text: string) {
-  const t = (text || '').toLowerCase();
-
-  // sygnały “to jest audit + wybór roli”
-  const hasAuditIntro =
-    /ju[żz]\s+wiem,\s+co\s+poprawi/.test(t) ||
-    /wybierz\s+rol/.test(t) ||
-    /ju[żz]\s+wiem,\s+co\s+brakuje/.test(t);
-
-  const hasChoosePrompt =
-    /wpisz\s+numer\s*:/.test(t) ||
-    /wpisz\s+numer\s+\d/.test(t) ||
-    /wybierz\s+numer\s*:/.test(t);
-
-  // dodatkowo: jeśli widzimy listę 1./2. i prompt “wpisz numer”, to prawie na pewno audit
-  const hasNumberedList = /(^|\n)\s*\d+\s*(?:[.)]|-|:)\s+/.test(text || '');
-
-  return (hasChoosePrompt && (hasAuditIntro || hasNumberedList));
+  return /Już wiem, co poprawić/i.test(text) && /Wpisz numer:/i.test(text);
 }
-function auditHasNumbering(text: string): boolean {
-  const t = (text || '').trim();
-  if (!t) return false;
-  // 1. / 1) / 1 - / 1:
-  return /(^|\n)\s*\d+\s*(?:[.)]|-|:)\s+/.test(t);
+function auditHasNumbering(text: string) {
+  return /^\s*\d{1,2}[.)]\s+/m.test(text);
 }
 function countAuditRoles(text: string) {
-  const t = text || '';
-  // 1. / 1) / 1 - / 1:
-  const hits = t.match(/(^|\n)\s*\d{1,3}\s*(?:[.)]|-|:)\s+/g);
-  return (hits || []).length;
+  return (text.match(/^\s*\d{1,2}[.)]\s+/gm) || []).length;
 }
 function extractRoleTitleFromAuditByNumber(text: string, num: number) {
   const re = new RegExp(`^\\s*${num}[.)]\\s+(.+?)\\s+\\|`, 'm');
@@ -960,365 +715,27 @@ function dedupeRoles(roles: Role[]) {
   return out;
 }
 
-// --- one-line role header parser: "Stanowisko - Firma, miasto | 06.2022 – 12.2024"
-function looksLikeDateRangeLoose(s: string): boolean {
-  const t = (s || '').trim();
-  return /(\b\d{1,2}[./]\d{4}\b|\b\d{4}\b)\s*(?:-|–|—|do|to)\s*(\b\d{1,2}[./]\d{4}\b|\b\d{4}\b|obecnie|present|now)/i.test(t);
-}
-function tryParseOneLineRoleHeader(line: string): Role | null {
-  const l = (line || '').trim();
-  if (!l || !l.includes('|')) return null;
-
-  const parts = l.split('|');
-  if (parts.length < 2) return null;
-
-  const left = parts[0].trim();
-  const datesPart = parts.slice(1).join('|').trim();
-
-  if (!looksLikeDateRangeLoose(datesPart)) return null;
-
-  // title = przed " - " / " – " / " — " (z otoczeniem spacjami)
-  const dashSplit = left.split(/\s[-–—]\s/);
-  const title = (dashSplit[0] || left).trim();
-
-  if (title.length < 3) return null;
-
-  const dates = extractDatesFromLine(datesPart) || datesPart || 'daty do uzupełnienia';
-  return { title, dates };
-}
-type ParsedRoleHeader = {
-  title: string;
-  company?: string;
-  location?: string;
-  dates?: string;
-  confidence: number; // 0..1
-};
-
-const DATE_RANGE_RE =
-  /\b(?:(?:0?[1-9]|1[0-2])\s*[./-]\s*(?:19|20)\d{2}|(?:19|20)\d{2})\s*(?:–|-|—|to|do)\s*(?:(?:0?[1-9]|1[0-2])\s*[./-]\s*(?:19|20)\d{2}|(?:19|20)\d{2}|present|obecnie|current)\b/i;
-
-function _cleanSpaces(s: string) {
-  return (s || "").replace(/\s+/g, " ").trim();
-}
-
-function _stripDatesFromEnd(line: string): { head: string; dates?: string } {
-  const m = line.match(DATE_RANGE_RE);
-  if (!m) return { head: _cleanSpaces(line) };
-  const idx = line.toLowerCase().lastIndexOf(m[0].toLowerCase());
-  if (idx === -1) return { head: _cleanSpaces(line) };
-  return {
-    head: _cleanSpaces(line.slice(0, idx)),
-    dates: _cleanSpaces(line.slice(idx)),
-  };
-}
-
-function _normalizeSeparators(s: string) {
-  return _cleanSpaces(
-    s
-      .replace(/[•·]/g, "|")
-      .replace(/\s*\|\s*/g, " | ")
-      .replace(/\s*(—|–)\s*/g, " - ")
-  );
-}
-
-function _looksLikeLocationOrCompany(x: string) {
-  const s = _cleanSpaces(x);
-  if (!s) return true;
-
-  // Jeśli ma typowe słowa stanowiskowe, to NIE traktuj jako company/location
-  const hasRoleWords =
-    /\b(manager|specialist|developer|engineer|analyst|lead|head|consultant|designer|marketing|sales|support|qa|admin|assistant|coordinator|director|executive|intern|trainee|junior|senior|specjalista|kierownik|inżynier|analityk|lider|dyrektor|asystent|koordynator|stażysta|praktykant)\b/i.test(
-      s
-    );
-  if (hasRoleWords) return false;
-
-  // Przecinek bez słów stanowiskowych -> bardzo często "Firma, Miasto"
-  if (s.includes(",")) return true;
-
-  // końcówki firm
-  if (/\b(sp\.?\s*z\.?\s*o\.?\s*o\.?|s\.?\s*a\.?|ltd|inc|gmbh|ag|plc)\b/i.test(s))
-    return true;
-
-  // hinty lokalizacji/trybu pracy
-  if (/\b(remote|hybrid|on-?site|warszawa|krak[oó]w|wroc[łl]aw|gda[nń]sk|pozna[nń]|[łl][oó]d[zź]|poland|emea|europe|uk|germany|france|czech)\b/i.test(s))
-    return true;
-
-  return true;
-}
-
-function _roleTitleScore(x: string) {
-  const s = _cleanSpaces(x);
-  if (!s) return -999;
-  let score = 0;
-
-  if (
-    /\b(manager|specialist|developer|engineer|analyst|lead|head|consultant|designer|marketing|sales|support|qa|admin|assistant|coordinator|director|executive|intern|trainee|junior|senior|specjalista|kierownik|inżynier|analityk|lider|dyrektor|asystent|koordynator|stażysta|praktykant)\b/i.test(
-      s
-    )
-  ) score += 4;
-
-  if (s.length <= 30) score += 2;
-  if (s.length > 45) score -= 2;
-
-  if (s.includes(",")) score -= 3;
-  if (/\b(sp\.?\s*z\.?\s*o\.?\s*o\.?|s\.?\s*a\.?|ltd|inc|gmbh|ag|plc)\b/i.test(s))
-    score -= 3;
-
-  return score;
-}
-
-/**
- * 1-liniowy nagłówek:
- * "TITLE - COMPANY, CITY | 06.2022 – 12.2024"
- */
-function parseOneLineRoleHeader(lineRaw: string): ParsedRoleHeader | null {
-  const line = _normalizeSeparators(lineRaw);
-  if (!line) return null;
-
-  const { head, dates } = _stripDatesFromEnd(line);
-  const parts = head.split(" | ").map(_cleanSpaces).filter(Boolean);
-  const left = parts[0] ?? "";
-
-  // split po " - " lub " @ "
-  let candTitle = "";
-  let candRest = "";
-
-  const dashSplit = left.split(" - ").map(_cleanSpaces).filter(Boolean);
-  if (dashSplit.length >= 2) {
-    candTitle = dashSplit[0];
-    candRest = dashSplit.slice(1).join(" - ");
-  } else {
-    const atSplit = left.split(/\s+@\s+/).map(_cleanSpaces).filter(Boolean);
-    if (atSplit.length >= 2) {
-      candTitle = atSplit[0];
-      candRest = atSplit.slice(1).join(" @ ");
-    } else {
-      return null;
-    }
-  }
-
-  let company = candRest;
-  let location = "";
-
-  if (company.includes(",")) {
-    const [c, ...rest] = company.split(",").map(_cleanSpaces);
-    company = c;
-    location = rest.join(", ");
-  }
-
-  // Safety: swap jeśli ktoś wkleił "Firma, Miasto" po lewej
-  const scoreA = _roleTitleScore(candTitle);
-  const scoreB = _roleTitleScore(company);
-
-  let title = candTitle;
-  let finalCompany = company;
-
-  if (_looksLikeLocationOrCompany(title) && scoreB > scoreA) {
-    title = company;
-    finalCompany = candTitle;
-    location = "";
-  }
-
-  if (_looksLikeLocationOrCompany(title)) return null;
-
-  const confidence = Math.max(0, Math.min(1, 0.5 + _roleTitleScore(title) / 10));
-
-  return {
-    title: _cleanSpaces(title),
-    company: _cleanSpaces(finalCompany),
-    location: _cleanSpaces(location),
-    dates: dates ? _cleanSpaces(dates) : undefined,
-    confidence,
-  };
-}
-
-/**
- * 2-liniowy nagłówek (TWÓJ AKTUALNY FORMAT):
- * Line1: "{TITLE}"
- * Line2: "{COMPANY}, {CITY} | {MM.YYYY – ...}"
- */
-function tryParseTwoLineRoleHeader(titleLineRaw: string, metaLineRaw: string): Role | null {
-  // UWAGA: jeśli już masz sample 1-liniowe, ta funkcja jest opcjonalna,
-  // ale zostawiamy ją jako "backup", żeby nie rozwalić innych formatów.
-  const title = _cleanSpaces(titleLineRaw);
-  const meta = _normalizeSeparators(metaLineRaw);
-
-  if (!title || !meta) return null;
-
-  // Druga linia powinna zawierać "|" albo zakres dat
-  if (!meta.includes("|") && !DATE_RANGE_RE.test(meta)) return null;
-
-  const m = meta.match(DATE_RANGE_RE);
-  const dates = m ? _cleanSpaces(m[0]) : "";
-
-  // Jeśli tytuł wygląda jak firma/miasto, nie uznajemy tego za rolę
-  if (_looksLikeLocationOrCompany(title)) return null;
-
-  return { title, dates: dates || "daty do uzupełnienia" };
-}
-
 function extractRolesFromCvText(cvText: string): Role[] {
   const t = preprocessCvSource(cvText || '');
   if (!t) return [];
 
-  // -------------------------
-  // Local heuristics (żeby nie łapało "Papaka, Warszawa" jako stanowiska)
-  // -------------------------
-  const clean = (s: any) => String(s || '').replace(/\s+/g, ' ').trim();
-
-  const roleWordRe =
-    /\b(manager|specialist|developer|engineer|analyst|lead|head|consultant|designer|marketing|sales|support|qa|admin|assistant|coordinator|director|executive|intern|trainee|junior|senior|specjalista|kierownik|inżynier|analityk|lider|dyrektor|asystent|koordynator|stażysta|praktykant)\b/i;
-
-  const companySuffixRe =
-    /\b(sp\.?\s*z\.?\s*o\.?\s*o\.?|s\.?\s*a\.?|ltd|inc|gmbh|ag|plc)\b/i;
-
-  const locationHintRe =
-    /\b(remote|hybrid|on-?site|warszawa|krak[oó]w|wroc[łl]aw|gda[nń]sk|pozna[nń]|[łl][oó]d[zź]|poland|europe|emea|uk|germany|france|czech)\b/i;
-
-  const dateRangeRe =
-    /\b(?:(?:0?[1-9]|1[0-2])\s*[./-]\s*(?:19|20)\d{2}|(?:19|20)\d{2})\s*(?:–|-|—|to|do)\s*(?:(?:0?[1-9]|1[0-2])\s*[./-]\s*(?:19|20)\d{2}|(?:19|20)\d{2}|present|obecnie|current)\b/i;
-
-  function isSuspiciousTitle(title: string): boolean {
-    const s = clean(title);
-    if (!s) return true;
-
-    // tytuł nie powinien zawierać dat
-    if (dateRangeRe.test(s)) return true;
-
-    // jeśli ma słowa stanowiskowe -> raczej OK
-    if (roleWordRe.test(s)) return false;
-
-    // jeśli wygląda jak firma/lokacja, a nie stanowisko -> podejrzane
-    const hasComma = s.includes(',');
-    const looksCompany = companySuffixRe.test(s);
-    const looksLocation = locationHintRe.test(s);
-
-    if (looksCompany) return true;
-    if (hasComma && !roleWordRe.test(s)) return true;
-    if (looksLocation && s.length <= 35) return true;
-
-    // bardzo długie "tytuły" bez słów stanowiskowych zwykle są śmieciem
-    if (s.length > 60) return true;
-
-    return false;
-  }
-
-  function safeRole(title: string, dates: string): Role | null {
-    const tt = clean(title);
-    if (!tt) return null;
-    if (isSuspiciousTitle(tt)) return null;
-
-    const dd = clean(dates) || 'daty do uzupełnienia';
-    return { title: tt, dates: dd };
-  }
-
-  // -------------------------
-  // 1) Standard parser (role blocks)
-  // -------------------------
   const blocks = parseExperienceIntoRoleBlocks(t);
+  if (!blocks.length) return [];
 
-  const rolesFromBlocks: Role[] = (blocks || [])
-    .map((b) => {
-      const titleFromParsed = clean(b?.title); // preferuj b.title
-      const titleFromSplit = clean(splitTitleCompany(clean(b?.titleLine)).title);
-      const titleLine = clean(b?.titleLine); // <-- to zastępuje Twoje nieistniejące "titleLine"
+  const roles = blocks.map((b) => {
+    const dates =
+      extractDatesFromLine(b.datesLine) ||
+      extractDatesFromLine(b.titleLine) ||
+      b.datesLine.trim() ||
+      'daty do uzupełnienia';
 
-      // Start: wybierz najlepszy dostępny tytuł
-      let title = titleFromParsed || titleFromSplit || titleLine;
+    return {
+      title: b.titleLine.trim(),
+      dates,
+    };
+  });
 
-      // SANITY-CHECK: jeśli title wygląda jak firma/miasto -> próbuj naprawić
-      if (titleLine && isSuspiciousTitle(title)) {
-        // 1-linia (Twoje sample są już 1-liniowe)
-        const repaired1 = tryParseOneLineRoleHeader(titleLine);
-        if (repaired1?.title && !isSuspiciousTitle(repaired1.title)) {
-          title = clean(repaired1.title);
-        } else if (titleFromSplit && !isSuspiciousTitle(titleFromSplit)) {
-          title = titleFromSplit;
-        } else {
-          // 2-linie (opcjonalny backup)
-          const repaired2 = tryParseTwoLineRoleHeader(titleLine, clean(b?.datesLine || ""));
-          if (repaired2?.title && !isSuspiciousTitle(repaired2.title)) {
-            title = clean(repaired2.title);
-          }
-        }
-      }
-
-      // Jeśli nadal śmieć -> wywal blok
-      if (isSuspiciousTitle(title)) return null;
-
-      // Daty: standard + fallback
-      let dates =
-        extractDatesFromLine(b?.datesLine) ||
-        extractDatesFromLine(b?.titleLine) ||
-        clean(b?.datesLine) ||
-        '';
-
-      // Jeżeli nagłówek 1-line ma lepsze daty -> bierz je
-      const parsedHeaderForDates = titleLine ? tryParseOneLineRoleHeader(titleLine) : null;
-      if (parsedHeaderForDates?.dates) {
-        dates = clean(parsedHeaderForDates.dates);
-      }
-
-      return safeRole(title, dates);
-    })
-    .filter(Boolean) as Role[];
-
-  // -------------------------
-  // 2) Fallback: one-line headers (dla "Stanowisko - Firma | daty")
-  // -------------------------
-  const rolesFromOneLine: Role[] = [];
-  for (const rawLine of t.split('\n')) {
-    const line = clean(rawLine);
-    if (!line) continue;
-
-    const parsed = tryParseOneLineRoleHeader(line);
-    if (!parsed) continue;
-
-    const title = clean(parsed.title);
-    if (!title || isSuspiciousTitle(title)) continue;
-
-    const dates = clean(parsed.dates) || 'daty do uzupełnienia';
-
-    const r = safeRole(title, dates);
-    if (r) rolesFromOneLine.push(r);
-  }
-
-  // -------------------------
-  // 3) Merge + dedupe + final filter
-  // -------------------------
-  const merged = dedupeRoles([...(rolesFromBlocks || []), ...(rolesFromOneLine || [])])
-    .filter((r) => r?.title && !isSuspiciousTitle(r.title));
-
-  return merged.slice(0, 8);
-}
-
-/** =========================
- *  Confidence check (FIX #2)
- *  If input looks like multi-role but parser returns <=1 role -> DO NOT start interview, show audit.
- *  ========================= */
-function looksLikeMultiRoleButParsedSingle(cvText: string, rolesCount: number) {
-  const t = preprocessCvSource(cvText || '');
-  if (!t) return false;
-  if (rolesCount > 1) return false;
-
-  const dr = countDateRanges(t);
-  if (dr >= 2) return true;
-
-  const lines = t.split('\n').map((l) => l.trim()).filter(Boolean);
-  let headerish = 0;
-  for (let i = 0; i < lines.length; i++) {
-    if (looksLikeRoleHeaderLine(lines[i], lines[i + 1] || '')) headerish++;
-  }
-  if (headerish >= 2) return true;
-
-  const coHits = (t.match(/\b(sp\. z o\.o\.|s\.a\.|ltd|inc|gmbh|s\.r\.o\.|kft)\b/gi) || []).length;
-  if (coHits >= 2 && dr >= 1) return true;
-
-  // if there are multiple "dash separators" and at least one date range, it's probably multi-role paste
-  const dashHits = (t.match(/\s[-–]\s/g) || []).length;
-  if (dashHits >= 3 && dr >= 1) return true;
-
-  return false;
+  return dedupeRoles(roles).slice(0, 8);
 }
 
 /** =========================
@@ -1358,6 +775,7 @@ function buildCvTextEffective(cvText: string | undefined, messages: Message[]) {
 
 /** =========================
  *  Missing analysis helpers
+ *  - IMPORTANT: ignore dates so they don’t look like “scale/result numbers”
  *  ========================= */
 function stripDateNoise(text: string) {
   let t = normalizeDateDashes(deglueDateTokens(normalizeNewlines(text || '')));
@@ -1375,32 +793,16 @@ function stripDateNoise(text: string) {
   return t.replace(/\s+/g, ' ').trim();
 }
 
-function extractNumbersNonWord(text: string) {
-  const t = normalizeNewlines(text || '');
-  // liczby nie mogą być częścią tokenu alfanumerycznego (np. B2B, 3PL)
-  // łapie: "50", "4.34", "4,34", "1 200", "1_200", "1,200", "-10%"
-  const re =
-    /(^|[^A-Za-z0-9ĄĆĘŁŃÓŚŹŻąćęłńóśźż_])(\d{1,3}(?:[ .,_]\d{3})*(?:[.,]\d+)?|\d+)(?![A-Za-z0-9ĄĆĘŁŃÓŚŹŻąćęłńóśźż_])/g;
-
-  const out: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(t)) !== null) {
-    const num = (m[2] || '').trim();
-    if (num) out.push(num.replace(/[ _]/g, ''));
-  }
-  return out;
-}
-
 function hasAnyNumber(text: string) {
   const t = stripDateNoise(text || '');
-  return extractNumbersNonWord(t).length > 0;
+  return /(\d+(?:[.,]\d+)?)/.test(t);
 }
 
 function hasActionsSignal(text: string) {
   const raw = preprocessCvSource(text || '');
   const t = stripDateNoise(raw).toLowerCase();
 
-  const verb = /(zarządza|zarzadz|prowadzi|koordyn|wdra|uruchom|optymaliz|analiz|monitor|negocj|sprzeda|pozysk|raport|audyt|tworz|zbudow|ustaw|konfigur|standaryz|automatyz|planow|priorytet|manage|led|deliver|own|build|optimi[sz]e|analy[sz]e|report|coordinate|implement)/i.test(
+  const verb = /(zarządza|zarzadz|prowadzi|koordyn|wdra|optymaliz|analiz|monitor|negocj|sprzeda|pozysk|raport|audyt|tworz|zbudow|ustaw|konfigur|standaryz|automatyz|planow|priorytet|manage|led|deliver|own|build|optimi[sz]e|analy[sz]e|report|coordinate|implement)/i.test(
     t
   );
 
@@ -1424,60 +826,10 @@ function hasScaleSignal(text: string) {
   }
   return false;
 }
-function hasActionsNounListSignal(text: string): boolean {
-  const s = stripDateNoise(preprocessCvSource(text || '')).trim().toLowerCase();
-  if (!s) return false;
 
-  const skipLineRe = /^(skala|scale|wynik|result|cel)\s*:/i;
-
-  // typowe "czynności" w CV jako rzeczowniki
-  const actionNounRe =
-    /\b(przygotowan|aktualizacj|research|kontakt|obsług|wprowadz|archiwizacj|raportowan|analiz|tworzen|planowan|koordynacj|moderacj|negocjacj|kwalifikacj|follow-?up)\w*\b/i;
-
-  const lines = s.split('\n').map((l) => l.trim()).filter(Boolean);
-
-  for (const line of lines) {
-    if (skipLineRe.test(line)) continue;
-
-    // jeśli jest "X: a, b, c" — bierz część po dwukropku
-    const body = line.includes(':') ? line.split(':').slice(1).join(':').trim() : line;
-
-    // lista po przecinkach/średnikach/bulletach
-    const parts = body
-      .split(/[,;•·]/)
-      .map((p) => p.trim())
-      .filter((p) => p.length >= 4);
-
-    if (parts.length >= 2 && actionNounRe.test(body)) return true;
-  }
-
-  return false;
-}
-
-function hasBaselineContextSignal(text: string): boolean {
-  const src = stripDateNoise(preprocessCvSource(text || '')).toLowerCase().trim();
-  if (!src) return false;
-
-  // 1) twardy baseline liczbowy (z X do Y / from X to Y / strzałki)
-  const explicitDeltaRe =
-    /\b(z|from)\s*\d+([.,]\d+)?\s*(%|pp|pkt|zł|pln|eur|€|h|min|s|ms)?\s*(do|to|->|→)\s*\d+([.,]\d+)?\s*(%|pp|pkt|zł|pln|eur|€|h|min|s|ms)?\b/;
-  if (explicitDeltaRe.test(src)) return true;
-
-  // 2) porównania okres do okresu (nawet bez liczb)
-  if (/\b(m\/m|q\/q|r\/r|yoy|mom|qoq)\b/.test(src)) return true;
-
-  // 3) porównanie opisowe bez liczb: "vs poprzedni okres", "w porównaniu do", "vs plan"
-  const relativeCmpRe =
-    /\b(vs\.?|versus|w por(ó|o)wnaniu( do)?|wzgl(ę|e)dem|wobec|na tle|poprzedni( okres)?|wcze(ś|s)niej|uprzednio|vs plan|wzgl(ę|e)dem planu|zgodnie z planem)\b/;
-  if (relativeCmpRe.test(src)) return true;
-
-  // 4) absolut/ceiling: uznajemy jako "kontekst wystarczający"
-  // przykłady: "100% terminowości", "wszystkie projekty na czas", "bez opóźnień"
-  const absoluteOkRe =
-    /\b(wszystkie|na czas|bez op(ó|o)źnie(ń|n)|zero op(ó|o)źnie(ń|n)|terminowo(ś|s)(ć|c)|on-?time|sla)\b/;
-  if (absoluteOkRe.test(src) && (/\b100\s*%/.test(src) || /\bwszystkie\b/.test(src))) return true;
-
-  return false;
+function hasBaselineContextSignal(text: string) {
+  const t = stripDateNoise(text || '').toLowerCase();
+  return /(yoy|mom|qoq|vs\.?|wzrost|spadek|z\s+\d|do\s+\d|baseline|benchmark|poprzedn|wcześniej|uprzednio)/i.test(t);
 }
 
 function hasAcquisitionProcessSignal(text: string) {
@@ -1503,44 +855,6 @@ function hasAcquisitionProcessSignal(text: string) {
 
   return hasNumberedSteps || hasProcessWords || (hasChannelish && stageHits);
 }
-function hasHardResultSignal(text: string): boolean {
-  const raw = preprocessCvSource(text || '');
-  const t = raw.toLowerCase();
-
-  const explicitDeltaRe =
-    /\b(z|from)\s*\d+([.,]\d+)?\s*(%|pp|pkt|zł|pln|eur|€|h|min|s|ms|k)?\s*(do|to|->|→)\s*\d+([.,]\d+)?\s*(%|pp|pkt|zł|pln|eur|€|h|min|s|ms|k)?\b/i;
-
-  if (explicitDeltaRe.test(t)) return true;
-
-  const kpiRe =
-    /\b(win rate|wygr|mrr|arr|przych(ó|o)d|revenue|sprzeda(ż|z)|mar(ż|z)a|zysk|roas|acos|cpa|cac|ltv|aov|cr\b|konwersj|conversion|ctr\b|cpc|cpv|cpm|csat|nps|sla|mttr|uptime|latency|error rate|defect leakage|pipeline)\b/i;
-
-  const lines = normalizeNewlines(raw)
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  for (const line of lines) {
-    const l = line.toLowerCase();
-    if (kpiRe.test(l) && /\d/.test(l)) return true;
-  }
-
-  return false;
-}
-
-
-function isSoftResultOnly(text: string): boolean {
-  const t = preprocessCvSource(text || '').toLowerCase();
-
-  // “ładne zdania” bez metryki — nie traktuj jako RESULT
-  const softRe =
-    /\b(dow(ó|o)z planu|realizacja planu|osi(ą|a)ganie cel(ó|o)w|zdrowy pipeline|stabilny pipeline|utrzymanie (zdrowego )?pipeline|dowo(ż|z)enie|pilnowanie termin(ó|o)w|wsp(ó|o)łpraca z zespo(ł|l)em)\b/i;
-
-  // jeśli jest twardy sygnał, to nie jest “soft-only”
-  if (hasHardResultSignal(t)) return false;
-
-  return softRe.test(t);
-}
 
 function hasResultSignal(text: string) {
   const raw0 = preprocessCvSource(text || '');
@@ -1560,25 +874,17 @@ function hasResultSignal(text: string) {
 }
 
 function shouldAskAcquisitionProcess(roleTitle: string, allText: string) {
-  const domain = inferRoleDomain(roleTitle, allText);
-
-  // tylko role, gdzie "pozyskanie" ma sens
-  if (!(domain === 'SALES' || domain === 'MARKETING' || domain === 'ECOM')) return false;
-
-  // wspólny tekst do heurystyk
   const t = `${roleTitle}\n${allText}`.toLowerCase();
 
-  // musi być sygnał pozyskania w treści
-  const acqRe =
-    /\b(pozyskiw|outbound|inbound|prospect|cold call|lead gen|kwalifikacj|pipeline|negocjacj|closing|demo)\b/;
+  const strong =
+    /(lead|leady|pipeline|prospect|inbound|outbound|cold call|coldcall|bd\b|business development|account(?!ing)|kandydat|rekrut|recruit|hiring|partner|deal|negocj|umow)/i.test(
+      t
+    );
 
-  if (!acqRe.test(t)) return false;
+  const salesOnly = /\bsprzeda\w*\b/i.test(t);
+  const salesPlus = salesOnly && /(lead|pipeline|prospect|inbound|outbound|account|bd|deal|pozyskiw|pozyskanie|negocj|umow)/i.test(t);
 
-  // jeśli user wyraźnie mówi "wsparcie / nie sprzedawałem" — odpuść
-  if (/\b(wsparcie|backoffice|asystent|nie sprzedawa|nie pozyskiwa)\b/.test(t)) return false;
-
-  // jeśli masz jeszcze swoją starą logikę poniżej — usuń ją albo zostaw, ale NIE twórz kolejnego "t"
-  return true;
+  return strong || salesPlus;
 }
 
 type RoleMissing = {
@@ -1606,6 +912,7 @@ function analyzeRoleMissing(roleTitle: string, roleBlock: string, allCvText: str
   const missingResult = !hasResult;
   const missingProcess = shouldProcess && !hasProcess;
 
+  // context is “nice-to-have”, but ONLY when there is real non-date number
   const missingContext = hasAnyNumber(block) && !hasBaselineContextSignal(block);
 
   const missingParts: string[] = [];
@@ -1616,7 +923,9 @@ function analyzeRoleMissing(roleTitle: string, roleBlock: string, allCvText: str
   if (!missingResult && !missingScale && !missingActions && missingContext) missingParts.push('kontekst wyniku (baseline/zmiana)');
 
   const summary =
-    missingParts.length === 0 ? 'nic krytycznego — można od razu zrobić mocny rewrite' : missingParts.join(', ');
+    missingParts.length === 0
+      ? 'nic krytycznego — można od razu zrobić mocny rewrite'
+      : missingParts.join(', ');
 
   return { missingActions, missingScale, missingResult, missingProcess, missingContext, summary } as RoleMissing;
 }
@@ -1624,114 +933,33 @@ function analyzeRoleMissing(roleTitle: string, roleBlock: string, allCvText: str
 /** =========================
  *  Role block extraction
  *  ========================= */
-function extractRoleBlock(cvText: string, roleTitle: string): string {
-  const src = normalizeNewlines(preprocessCvSource(cvText || ''));
-  if (!src.trim()) return '';
+function extractRoleBlock(cvText: string, titleLine: string) {
+  const t = preprocessCvSource(cvText || '');
+  if (!t.trim() || !titleLine.trim()) return '';
 
-  const targetKey = keyify(roleTitle || '');
-  if (!targetKey) return '';
+  const blocks = parseExperienceIntoRoleBlocks(t);
+  if (!blocks.length) return '';
 
-  const lines = src.split('\n').map((l) => (l ?? '').replace(/\s+$/g, ''));
+  const want = keyify(titleLine);
 
-  type Header = { start: number; title: string; headerLines: 1 | 2 };
-  const headers: Header[] = [];
+  const exact = blocks.find((b) => keyify(b.titleLine) === want);
+  if (exact) return exact.raw;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = (lines[i] || '').trim();
-    if (!line) continue;
+  const partial = blocks.filter((b) => {
+    const k = keyify(b.titleLine);
+    return k.includes(want) || want.includes(k);
+  });
+  if (partial.length === 1) return partial[0].raw;
 
-    // 1) One-line header: "Title - Company | dates"
-    const one = tryParseOneLineRoleHeader(line);
-    if (one?.title) {
-      headers.push({ start: i, title: one.title, headerLines: 1 });
-      continue;
-    }
+  const wantTitleOnly = keyify(splitTitleCompany(titleLine).title);
+  const byTitle = blocks.filter((b) => keyify(b.title) === wantTitleOnly);
+  if (byTitle.length === 1) return byTitle[0].raw;
 
-    // 2) Two-line header:
-    // {TITLE}
-    // {COMPANY}, {CITY} | {DATES}
-    if (i + 1 < lines.length) {
-      const two = tryParseTwoLineRoleHeader(lines[i] || '', lines[i + 1] || '');
-      if (two?.title) {
-        headers.push({ start: i, title: two.title, headerLines: 2 });
-        i += 1; // skip meta line
-        continue;
-      }
-    }
-  }
-
-  const tKey = (s: string) => keyify(s || '');
-
-  let hit = -1;
-
-  // match: exact key first
-  for (let i = 0; i < headers.length; i++) {
-    if (tKey(headers[i].title) === targetKey) {
-      hit = i;
-      break;
-    }
-  }
-
-  // match: contains (fallback)
-  if (hit === -1) {
-    for (let i = 0; i < headers.length; i++) {
-      const hk = tKey(headers[i].title);
-      if (hk && (hk.includes(targetKey) || targetKey.includes(hk))) {
-        hit = i;
-        break;
-      }
-    }
-  }
-
-  // fallback: znajdź linię zawierającą tytuł i utnij do kolejnego headera po tej linii
-  if (hit === -1) {
-    const idx = lines.findIndex((l) => tKey(l).includes(targetKey));
-    if (idx === -1) return '';
-
-    // znajdź najbliższy header po idx
-    let nextHeaderStart = lines.length;
-    for (const h of headers) {
-      if (h.start > idx) {
-        nextHeaderStart = h.start;
-        break;
-      }
-    }
-
-    const raw = lines.slice(idx, nextHeaderStart).join('\n').trim();
-    return stripCvMetaAndFiller(raw).trim();
-  }
-
-  const start = headers[hit].start;
-  const end = hit + 1 < headers.length ? headers[hit + 1].start : lines.length;
-
-  const rawBlock = lines.slice(start, end).join('\n').trim();
-  return stripCvMetaAndFiller(rawBlock).trim();
-}
-
-function inferSingleRoleFromLooseText(text: string): { title: string; dates: string } | null {
-  const t = preprocessCvSource(text || '');
-  const lines = t.split('\n').map(l => l.trim()).filter(Boolean);
-
-  // bierz pierwszą linię z datami albo pierwszą niepustą
-  const line =
-    lines.find(l => /(?:0[1-9]|1[0-2])\/\d{4}|\d{4}/.test(l)) ||
-    lines[0] ||
-    '';
-
-  // Separator tytuł–firma: " - " (z odstępami), żeby nie ucinało np. "E-COMMERCE"
-  const m = line.match(
-    /^\s*(.+?)\s(?:-|–|—)\s(.+?)\s+((?:0[1-9]|1[0-2])\/\d{4}|\d{4})\s*(?:-|–|—)\s*((?:0[1-9]|1[0-2])\/\d{4}|\d{4}|obecnie)/i
-  );
-  if (!m) return null;
-
-  const title = m[1].replace(/\s{2,}/g, ' ').trim();
-  const dates = `${m[3]} - ${m[4]}`.replace(/obecnie/i, 'obecnie').trim();
-
-  return { title, dates };
+  return '';
 }
 
 /** =========================
- *  Audit builder
+ *  Audit builder (improved)
  *  ========================= */
 function buildAudit(cvText: string) {
   const roles = dedupeRoles(extractRolesFromCvText(cvText));
@@ -1826,7 +1054,7 @@ function userWantsContinueAfterRewrite(text: string) {
 }
 
 /** =========================
- *  Interview logic
+ *  Interview logic (fixed loops + better kind inference)
  *  ========================= */
 function isJustNumberChoice(text: string) {
   return /^\s*\d{1,2}\s*$/.test((text || '').trim());
@@ -1838,64 +1066,24 @@ function userCannotShare(text: string) {
 }
 
 function userNonAnswer(text: string) {
-  const raw = (text || '').trim();
-  const t = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+  const t = (text || '').trim().toLowerCase();
   if (!t) return true;
 
-  // same znaki / kropki / krótkie śmieci
-  if (/^[\.\-—–_?!,;:]+$/.test(t)) return true;
-  if (t === '…' || /^\.+$/.test(t)) return true;
-  if (t.length <= 2) return true;
-  if (/^[a-z]{1,3}$/.test(t)) return true; // "a", "s", "ysk"
-
-  // typowe "brak danych"
-  const exact = new Set([
-    'nie pamiętam', 'nie pamietam',
+  const nonAnswers = new Set([
+    'nie pamiętam',
+    'nie pamietam',
     'nie wiem',
-    'nie mam', 'nie mam danych',
-    'brak', 'brak danych',
-    'n/a', 'na',
-    '-', '—', '?', '???', '...'
+    'brak',
+    'brak danych',
+    'n/a',
+    'na',
+    '—',
+    '-',
+    '?',
+    '???',
   ]);
-  if (exact.has(t)) return true;
 
-  // częste odpowiedzi-odmowy / nic-nie-mówiące
-  if (
-    t.includes('to nie moja działka') ||
-    t.includes('nie moja działka') ||
-    t.includes('nie dotyczy') ||
-    t.includes('nie zajmowałem') || t.includes('nie zajmowalem') ||
-    t.includes('nie było') || t.includes('nie bylo') ||
-    t.includes('nie sprzedawałem') || t.includes('nie sprzedawalem') ||
-    t.includes('nie pozyskiwałem') || t.includes('nie pozyskiwalem') ||
-    t.includes('nie było takiego procesu') || t.includes('nie bylo takiego procesu')
-  ) return true;
-
-  return false;
-}
-function isWeakBaselineAnswer(text: string) {
-  const t = (text || '').toLowerCase().replace(/\s+/g, ' ').trim();
-  if (!t) return true;
-
-  const hasDigit = /\d/.test(t);
-  const hasBaselineWords = /\b(vs|versus|poprzedni|wcześniej|wczesniej|m\/m|q\/q|t\/t|y\/y|z|do|wzrost|spadek)\b/.test(t);
-
-  return hasBaselineWords && !hasDigit; // np. "100% vs poprzedni okres"
-}
-function enforceDeterministicBeforeSection(txt: string, roleTitle: string, roleBlockText: string) {
-  const beforeBody = stripLeadingIndentAllLines(preprocessCvSource(roleBlockText || '')).trim();
-  const clipped = beforeBody.split('\n').filter(Boolean).slice(0, 12).join('\n'); // max 12 linii
-  const before = `=== BEFORE (${roleTitle}) ===\n${clipped}\n`;
-
-  return txt.replace(
-    /=== BEFORE \([^)]+\) ===[\s\S]*?(?=\n=== AFTER \([^)]+\) ===)/,
-    before
-  );
-}
-
-function isPostRewritePrompt(lastAssistantText: string) {
-  const t = (lastAssistantText || '');
-  return t.includes('=== AFTER (') && t.toLowerCase().includes('chcesz poprawić kolejną rolę');
+  return nonAnswers.has(t) || t.length <= 3;
 }
 
 function findInterviewStartIndex(messages: Message[]) {
@@ -1924,85 +1112,20 @@ type InterviewFacts = {
   hasScale: boolean;
   hasProcess: boolean;
   hasResult: boolean;
-  hasContext: boolean; // baseline/zmiana (z X do Y, yoy/mom/qoq, vs, itp.)
-  needsContext: boolean;
 };
 
 function extractInterviewFactsFromText(text: string): InterviewFacts {
   const joined = preprocessCvSource(text || '');
   const stripped = stripDateNoise(joined);
-
-  const hasNum = hasAnyNumber(stripped);
-  const hasBaseline = hasBaselineContextSignal(stripped);
-
-  // ACTIONS: czasowniki LUB lista rzeczowników po ":" / przecinkach
-  const hasActions = hasActionsSignal(stripped) || hasActionsNounListSignal(stripped);
-
-  let hasScale = hasScaleSignal(stripped);
-  const hasProcess = hasAcquisitionProcessSignal(stripped);
-
-  // RESULT: najpierw “surowy” sygnał, potem doprecyzowanie
-  const rawHasResult = hasResultSignal(stripped);
-  const hardResult = hasHardResultSignal(stripped);
-  const softOnly = isSoftResultOnly(stripped);
-
-  // ✅ wynik uznajemy za “prawdziwy”, gdy jest twardy (KPI/liczby/delta),
-  // a nie tylko “dowóz planu / zdrowy pipeline” bez konkretów
-  const hasResult = rawHasResult && hardResult && !softOnly;
-
-  // SCALE: łap naturalny język (tygodniowo / miesięcznie / dziennie) + “pipeline/budżet/spend”
-  if (!hasScale) {
-    const lower = stripped.toLowerCase();
-
-    const hasScaleLabel = /\b(skala|scale)\s*:\s*/i.test(lower);
-
-    // ✅ dodane: “tygodniowo/miesięcznie/dziennie/kwartalnie/rocznie”
-    const qtyWithUnitRe =
-      /\b(\d+\s*(?:–|-|—)\s*\d+|\d+)\s*(?:\/\s*)?(?:na\s*)?(dzień|dzien|dziennie|tydz\.?|tydzień|tydzien|tygodniowo|mies\.?|miesiąc|miesiac|miesięcznie|miesiecznie|kw\.?|kwartał|kwartal|kwartalnie|rok|rocznie|sprint)\b/i;
-
-    // ✅ rozszerzone: typowe “wolumenowe” słowa (sales/support/ops)
-    const mentionsVolumeRe =
-      /\b(pipeline|budżet|budzet|spend|zasi[eę]g|wy[śs]wietlenia|followers|obserwuj[aą]c|lead|leady|sql|mql|call|cold call|kontakt|spotkan|ofert|ticket|zgłosze|spraw|dokument|faktur)\b/i;
-
-    if (hasScaleLabel || qtyWithUnitRe.test(lower) || (hasNum && mentionsVolumeRe.test(lower))) {
-      hasScale = true;
-    }
-  }
-  // CONTEXT potrzebny tylko gdy mamy “twardy” wynik, ale bez baseline
-  const resultIs100 = /\b100\s*%/i.test(stripped);
-  const needsContext = hasResult && !hasBaseline && !resultIs100;
-
-    return {
-    hasActions,
-    hasScale,
-    hasProcess,
-    hasResult,
-    hasContext: hasBaseline,
-    needsContext,
+  return {
+    hasActions: hasActionsSignal(stripped),
+    hasScale: hasScaleSignal(stripped),
+    hasProcess: hasAcquisitionProcessSignal(stripped),
+    hasResult: hasResultSignal(stripped),
   };
 }
 
-function isCeilingResultWhereBaselineIsPointless(text: string): boolean {
-  const t = (text || '').toLowerCase();
-
-  // 100% + terminowość/on-time/SLA itp.
-  const isHundred = /\b100\s*%|\b100\s*procent\b/.test(t);
-  const punctualityRe = /\b(terminowość|terminowosc|on-?time|na\s+czas|sla|bez\s+opóźnień|bez\s+opoznien)\b/;
-
-  // “wszystko na czas” bez liczby baseline
-  const allOnTimeRe = /\b(wszy(stkie)?\s+projekty?\s+na\s+czas|zawsze\s+na\s+czas)\b/;
-
-  // 0 błędów / zero incydentów — też “ceiling”
-  const zeroIssuesRe = /\b(0\s*(bug|błęd|bled|incydent)|zero\s*(bug|błęd|bled|incydent))\b/;
-
-  if (isHundred && punctualityRe.test(t)) return true;
-  if (allOnTimeRe.test(t)) return true;
-  if (zeroIssuesRe.test(t)) return true;
-
-  return false;
-}
-
-type QuestionKind = 'ACTIONS' | 'SCALE' | 'PROCESS' | 'RESULT' | 'CONTEXT';
+type QuestionKind = 'ACTIONS' | 'SCALE' | 'PROCESS' | 'RESULT';
 
 const Q1 = 'Co konkretnie TY zrobiłeś w tej roli? Podaj 2–3 działania, bez "my".';
 const Q2 = 'Jaka była skala? Podaj 1 liczbę albo widełki (np. liczba projektów/spraw, liczebność zespołu, budżet, wolumen).';
@@ -2014,39 +1137,15 @@ const Q_RESULT =
   'Jaki był wynik Twoich działań? Chodzi o konkretną miarę efektu (metryka albo sensowne proxy): np. % wzrostu/spadku, oszczędności, terminowość, spadek błędów/zakłóceń.';
 const Q_RESULT_SAFE =
   'Jeśli nie możesz podać twardych wyników/kwot — podaj bezpieczny proxy: np. terminowość, spadek liczby błędów/incydentów, skrócenie czasu realizacji, mniej eskalacji, poprawa jakości/CX.';
-const Q_CONTEXT =
-  'Jaki był punkt odniesienia wyniku? Podaj baseline/zmianę: np. z X do Y, yoy/mom/qoq, albo vs poprzedni okres (wystarczy 1 zdanie).';
-const Q2_SALES = `Jaka była skala Twojej pracy sprzedażowej? Podaj 2–3 liczby (bez wrażliwych danych): np. leady/kontakty, rozmowy/spotkania, wysłane oferty, wartość pipeline.`;
-
-const Q2_SALES_SAFE = `Jaka była skala Twojej pracy sprzedażowej? Podaj bezpieczny proxy (widełki): np. leady/kontakty, rozmowy/spotkania, wysłane oferty, aktywne szanse (pipeline).`;
-
-function looksLikeSalesRole(text: string): boolean {
-  const t = preprocessCvSource(text || '').toLowerCase();
-  return /(sprzedaż|sales|b2b|crm|lead|prospect|cold call|coldcall|outbound|inbound|negocjac|ofert(y|owanie)?|pipeline|szans)/i.test(t);
-}
 
 function inferQuestionKindFromAssistant(text: string): QuestionKind | null {
   const t = normalizeNewlines(text || '').toLowerCase();
 
-  const hasRange = (a: number, b: number) => new RegExp(`${a}\\s*[-–]\\s*${b}`).test(t);
+  if (t.includes('co konkretnie') && t.includes('2–3') && t.includes('dział')) return 'ACTIONS';
+  if (t.includes('jaka była skala') || t.includes('widełk') || t.includes('wolumen') || t.includes('liczba osób')) return 'SCALE';
+  if (t.includes('proces pozyskania') || (t.includes('2–4') && t.includes('etap') && t.includes('finaliz'))) return 'PROCESS';
 
-  // CONTEXT FIRST (baseline/punkt odniesienia)
-  if (t.includes('punkt odniesienia') || t.includes('baseline') || t.includes('podaj baseline') || t.includes('m/m') || t.includes('mom') || t.includes('qoq')) {
-    return 'CONTEXT';
-  }
-
-  if (t.includes('co konkretnie') && (t.includes('2–3') || t.includes('2-3') || hasRange(2, 3)) && t.includes('dział')) {
-    return 'ACTIONS';
-  }
-
-  if (t.includes('jaka była skala') || t.includes('widełk') || t.includes('wolumen') || t.includes('liczba osób')) {
-    return 'SCALE';
-  }
-
-  if (t.includes('proces pozyskania') || (t.includes('etap') && t.includes('finaliz') && (t.includes('2–4') || t.includes('2-4') || hasRange(2, 4)))) {
-    return 'PROCESS';
-  }
-
+  // RESULT: detect both normal and SAFE variants
   if (t.includes('jaki był wynik') || t.includes('wynik twoich działań') || t.includes('bezpieczny proxy') || t.includes('metryk')) {
     return 'RESULT';
   }
@@ -2060,87 +1159,9 @@ type InterviewState = {
   askedTotal: number;
 };
 
-type InterviewStep =
-  | { kind: 'ASK'; qk: QuestionKind; question: string }
-  | { kind: 'REWRITE' };
-
-function buildDeterministicRewrite(roleTitle: string, roleBlockText: string, userFactsText: string) {
-  const beforeBody = stripLeadingIndentAllLines(preprocessCvSource(roleBlockText || '')).trim();
-
-  const facts = preprocessCvSource(`${roleBlockText}\n${userFactsText}` || '');
-  const lines = facts
-    .split('\n')
-    .map((l) => (l || '').trim())
-    .filter(Boolean);
-
-  const isMeta = (l: string) => /^(cel:|w cv liczy się|uwaga:|gotowy na|już wiem|wpisz numer)/i.test(l);
-  const cleanLines = lines.filter((l) => !isMeta(l));
-
-  const actionLines = cleanLines
-    .filter((l) => !/^(skala|scale|wynik|result)\s*:/i.test(l) && !/\d/.test(l))
-    .slice(0, 3);
-
-  const scaleLines = cleanLines
-    .filter((l) => {
-      if (/^(skala|scale)\s*:/i.test(l)) return true;
-      if (!/\d/.test(l)) return false;
-      return /\b(dzień|dzien|tydz|tydzień|tydzien|mies|miesiąc|miesiac|kw|kwartał|kwartal|rok|sprint)\b/i.test(l);
-    })
-    .slice(0, 2);
-
-  const resultLines = cleanLines
-    .filter((l) => {
-      if (/^(wynik|result)\s*:/i.test(l)) return true;
-      return /\b(spadek|wzrost|redukcj|popraw|osiąg|osiagn|csat|nps|sla|roas|cpa|cac|ctr|cr|defect|pass rate|error rate|mttr|uptime|latency)\b/i.test(
-        l
-      );
-    })
-    .slice(0, 2);
-
-  const toDash = (l: string) => {
-    const s = (l || '').replace(/\s+/g, ' ').trim();
-    const noLabel = s.replace(/^(skala|scale|wynik|result)\s*:\s*/i, '');
-    return `- ${noLabel}`;
-  };
-
-  let bulletsA = [...actionLines, ...scaleLines, ...resultLines].map(toDash);
-
-  // min 3 bullety
-  if (bulletsA.length < 3) {
-    bulletsA = [
-      ...bulletsA,
-      '- Realizacja kluczowych zadań w ramach roli.',
-      '- Praca w ustalonym zakresie odpowiedzialności.',
-      '- Dostarczanie wyników zgodnie z oczekiwaniami zespołu.',
-    ].slice(0, 3);
-  }
-
-  // max 8
-  bulletsA = bulletsA.slice(0, 8);
-
-  // Wersja B ma się różnić – robimy “mocniejszy” język bez dodawania faktów
-  const strengthen = (b: string, i: number) => {
-    if (i === 0) return b.replace('- ', '- Samodzielne działanie: ');
-    if (i === 1) return b.replace('- ', '- Regularne prowadzenie: ');
-    if (i === 2) return b.replace('- ', '- Usprawnianie: ');
-    return b;
-  };
-  const bulletsB = bulletsA.map(strengthen);
-
-  return (
-    `=== BEFORE (${roleTitle}) ===\n` +
-    `${beforeBody}\n\n` +
-    `=== AFTER (${roleTitle}) ===\n` +
-    `Wersja A (bezpieczna):\n` +
-    `${bulletsA.join('\n')}\n` +
-    `Wersja B (mocniejsza):\n` +
-    `${bulletsB.join('\n')}\n\n` +
-    `Chcesz poprawić kolejną rolę?`
-  );
-}
 function computeInterviewState(messages: Message[], startIdx: number): InterviewState {
-  const askedCounts: Record<QuestionKind, number> = { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0, CONTEXT: 0 };
-const declinedCounts: Record<QuestionKind, number> = { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0, CONTEXT: 0 };
+  const askedCounts: Record<QuestionKind, number> = { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0 };
+  const declinedCounts: Record<QuestionKind, number> = { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0 };
 
   let currentKind: QuestionKind | null = null;
 
@@ -2175,278 +1196,62 @@ const declinedCounts: Record<QuestionKind, number> = { ACTIONS: 0, SCALE: 0, PRO
   return { askedCounts, declinedCounts, askedTotal };
 }
 
-type NextInterviewStep =
-  | { kind: 'ASK'; question: string; qk: QuestionKind }
-  | { kind: 'REWRITE' };
-
-function detectMetricMention(text: string): string | null {
-  const t = preprocessCvSource(text || '').toLowerCase();
-  if (/\bltv\b/.test(t)) return 'LTV';
-  if (/\baov\b/.test(t)) return 'AOV';
-  if (/\bcac\b/.test(t)) return 'CAC';
-  if (/\broas\b/.test(t)) return 'ROAS';
-  if (/\bacos\b/.test(t)) return 'ACOS';
-  if (/\bctr\b/.test(t)) return 'CTR';
-  if (/\bcr\b/.test(t) || /konwersj|conversion/.test(t)) return 'CR (konwersja)';
-  return null;
-}
-
-function anchorVariants(anchor: string): string[] {
-  const a = (anchor || '').toLowerCase();
-  const num = a.replace(/[^\d.,]/g, '');
-  const dot = num.replace(',', '.');
-  const comma = num.replace('.', ',');
-  const bare = dot; // "4.34"
-  return Array.from(new Set([a, num, dot, comma, bare].filter(Boolean)));
-}
-
-/**
- * True tylko jeśli:
- * - jest baseline (z X do Y / X->Y / mom/qoq itd.)
- * - i (anchor albo metryka) pasuje do targetu (CR vs LTV itd.)
- */
-function hasBaselineContextForTarget(answerText: string, target: MetricTarget): boolean {
-  const raw = stripDateNoise(preprocessCvSource(answerText || ''));
-  if (!hasBaselineContextSignal(raw)) return false;
-
-  const t = raw.toLowerCase();
-  const label = (target.label || '').toLowerCase();
-
-  const wantsCR = label.includes('cr') || label.includes('konwers');
-  const wantsLTV = label.includes('ltv');
-  const wantsCTR = label.includes('ctr');
-
-  const mentionsAnchor = target.anchor
-    ? anchorVariants(target.anchor).some(v => v && t.includes(v))
-    : false;
-
-  const mentionsExpectedMetric =
-    wantsCR ? /(\bcr\b|konwersj|conversion)/i.test(t)
-    : wantsLTV ? /\bltv\b/i.test(t)
-    : wantsCTR ? /\bctr\b/i.test(t)
-    : true;
-
-  // szybka blokada “podał inną metrykę”
-  const wrongForCR = wantsCR && (/\bltv\b|\baov\b|\bcac\b|\broas\b|\bacos\b/i.test(t)) && !/(\bcr\b|konwersj|conversion)/i.test(t);
-  const wrongForLTV = wantsLTV && (/(\bcr\b|konwersj|conversion|\bctr\b)/i.test(t)) && !/\bltv\b/i.test(t);
-
-  return !wrongForCR && !wrongForLTV && (mentionsAnchor || mentionsExpectedMetric);
-}
-
 function decideNextInterviewStep(
   shouldAskProcess: boolean,
   facts: InterviewFacts,
   state: InterviewState
-): InterviewStep {
+) {
   const maxQuestions = 6;
+
   if (state.askedTotal >= maxQuestions) return { kind: 'REWRITE' as const };
 
-  // odmowa: 1 decline albo 2 zapytania o ten sam typ
-  const declined = (k: QuestionKind) =>
-    (state.declinedCounts[k] ?? 0) >= 1 || (state.askedCounts[k] ?? 0) >= 2;
+  const declined = (k: QuestionKind) => state.declinedCounts[k] >= 1 || state.askedCounts[k] >= 2;
 
-  // 1) Fundamenty
-  if (!facts.hasActions && !declined('ACTIONS')) {
-    return { kind: 'ASK' as const, question: Q1, qk: 'ACTIONS' as const };
-  }
-
-  if (!facts.hasScale && !declined('SCALE')) {
-    return { kind: 'ASK' as const, question: Q2, qk: 'SCALE' as const };
-  }
-
-  if (shouldAskProcess && !facts.hasProcess && !declined('PROCESS')) {
+  if (!facts.hasActions && !declined('ACTIONS')) return { kind: 'ASK' as const, question: Q1, qk: 'ACTIONS' as const };
+  if (!facts.hasScale && !declined('SCALE')) return { kind: 'ASK' as const, question: Q2, qk: 'SCALE' as const };
+  if (shouldAskProcess && !facts.hasProcess && !declined('PROCESS'))
     return { kind: 'ASK' as const, question: Q_PROCESS, qk: 'PROCESS' as const };
-  }
-
-  // 2) Wynik
-  if (!facts.hasResult) {
-    if (!declined('RESULT')) {
-      // handler i tak nadpisze na buildResultQuestion(...)
-      return { kind: 'ASK' as const, question: '', qk: 'RESULT' as const };
-    }
-    return { kind: 'REWRITE' as const };
-  }
-
-  // 3) CONTEXT gate: jeśli jest wynik, ale brak baseline/kontekstu → pytaj o CONTEXT zanim REWRITE
-  if (!facts.hasContext && !declined('CONTEXT')) {
-    // handler i tak nadpisze na buildContextQuestion(...)
-    return { kind: 'ASK' as const, question: '', qk: 'CONTEXT' as const };
-  }
+  if (!facts.hasResult && !declined('RESULT')) return { kind: 'ASK' as const, question: Q_RESULT, qk: 'RESULT' as const };
 
   return { kind: 'REWRITE' as const };
 }
 
 /** =========================
- *  Deterministic hints
+ *  NEW: deterministic hints based on role text (no model)
  *  ========================= */
-function buildScaleHintByDomain(domain: RoleDomain): string {
-  switch (domain) {
-    case 'MARKETING':
-      return 'budżet/spend mies., liczba kampanii aktywnych, liczba kreacji/testów A/B, liczba landingów, leady/ruch / mies.';
-    case 'ECOM':
-      return 'liczba listingów/SKU, liczba zamówień / mies., ruch / mies., CR/CTR (jeśli masz), liczba kanałów/marketplace.';
-    case 'SALES':
-      return 'lejek: leady/kontakty, spotkania, wysłane oferty, aktywne szanse (pipeline), aktywność: cold calle / follow-upy.';
-    case 'PM':
-      return 'liczba projektów/streamów, liczba osób (zespół+dostawcy), budżet, liczba interesariuszy, częstotliwość release/statusów.';
-    case 'DEV':
-      return 'ticketów / sprint, PR / mies., deploye / tydz., liczba serwisów/modułów, incydenty/on-call.';
-    case 'QA':
-      return 'test case / sprint, regresje / tydz., zgłoszenia bugów / mies., pokrycie (jeśli macie).';
-    case 'SUPPORT':
-      return 'zgłoszenia / dzień (mail/chat/telefon), backlog, % eskalacji, SLA (1st response), czas rozwiązania.';
-    case 'ADMIN':
-      return 'dokumenty / dzień (faktury/umowy), rekordy / mies., czas obiegu, liczba procesów, błędy (%).';
-    default:
-      return 'wolumen (np. sprawy/tydz.), liczba zadań, częstotliwość, skala procesu.';
-  }
-}
-
-function buildResultHintByDomain(domain: RoleDomain): string {
-  switch (domain) {
-    case 'MARKETING':
-      return 'ROAS/CPA/CAC/CTR/CR, przychód, koszt/lead.';
-    case 'ECOM':
-      return 'CR/CTR/AOV/LTV/CAC/ROAS/ACOS (jeśli masz).';
-    case 'SALES':
-      return 'win rate, #umów, przychód/MRR, pipeline, konwersja etapów.';
-    case 'PM':
-      return 'terminowość (on-time), budżet (variance), redukcja opóźnień, sukces release.';
-    case 'DEV':
-      return 'latency, error rate, uptime, MTTR, throughput.';
-    case 'QA':
-      return 'defect leakage, pass rate, spadek #bugów, coverage (jeśli macie).';
-    case 'SUPPORT':
-      return 'SLA, czas 1. odpowiedzi, czas rozwiązania, % eskalacji.';
-    case 'ADMIN':
-      return 'czas obiegu, błędy (%), automatyzacja, wolumen, oszczędność czasu.';
-    default:
-      return 'oszczędności / SLA / mniej błędów / poprawa jakości.';
-  }
-}
-
 function buildHintForQuestion(kind: QuestionKind, roleText: string) {
-  const rt = preprocessCvSource(roleText || '');
-  const domain = inferRoleDomain('', rt); // title zwykle jest w roleText (extractRoleBlock), więc to trafia
+  const t = preprocessCvSource(roleText || '').toLowerCase();
+
+  const hints: string[] = [];
 
   if (kind === 'SCALE') {
-    return `Podpowiedź (na bazie roli): ${buildScaleHintByDomain(domain)}.`;
+    if (/(zesp[oó]ł|team)/i.test(t)) hints.push('liczba osób w zespole');
+    if (/(bud[żz]et|budget|cost)/i.test(t)) hints.push('budżet / widełki');
+    if (/(projekt|project)/i.test(t)) hints.push('liczba projektów');
+    if (/(stakeholder|interesariusz)/i.test(t)) hints.push('liczba interesariuszy');
+    if (/(zgłosze|incydent|ticket|case)/i.test(t)) hints.push('liczba zgłoszeń/incydentów (np. /tydz.)');
+    if (/(shopify|allegro|amazon|marketplace|listing|sku|ofert)/i.test(t)) hints.push('wolumen: liczba listingów/ofert/SKU');
   }
 
   if (kind === 'RESULT') {
-    return `Podpowiedź (na bazie roli): ${buildResultHintByDomain(domain)}.`;
+    if (/(oszcz[ęe]d|savings|redukc)/i.test(t)) hints.push('oszczędności / redukcja kosztów');
+    if (/(terminow|delay|op[oó][źz]n|sla)/i.test(t)) hints.push('terminowość / SLA / mniej opóźnień');
+    if (/(b[łl][ęe]d|incydent|reklamac|error|issue)/i.test(t)) hints.push('mniej błędów/incydentów/reklamacji');
+    if (/(shopify|ga4|ctr|cr\b|cvr\b|aov\b|ltv\b|cac\b|roas|acos)/i.test(t))
+      hints.push('metryki e-commerce: CR/CTR/AOV/LTV/CAC/ROAS (jeśli masz)');
   }
-
-  const t = rt.toLowerCase();
-  const hints: string[] = [];
 
   if (kind === 'PROCESS') {
-    if (/(cold call|coldcall|linkedin|lead|www|formularz|outbound|inbound)/i.test(t)) {
+    if (/(cold call|coldcall|linkedin|lead|www|formularz|outbound|inbound)/i.test(t))
       hints.push('kanały: cold call / inbound z www / LinkedIn + 2–4 etapy');
-    }
-  }
-
-  if (kind === 'CONTEXT') {
-    if (/(cr\b|cvr\b|ctr\b|aov\b|ltv\b|cac\b|roas|acos|konwersj|conversion)/i.test(t)) {
-      hints.push('podaj baseline dla tej metryki jako „z X do Y” (np. m/m, qoq, yoy albo vs poprzedni okres)');
-    } else {
-      hints.push('podaj baseline jako „z X do Y” (m/m, qoq, yoy albo vs poprzedni okres)');
-    }
   }
 
   if (!hints.length) return '';
   return `Podpowiedź (na bazie opisu): ${hints.join(', ')}.`;
 }
 
-type MetricTarget = { label: string; anchor?: string };
-
-function pickMetricTargetForContext(roleBlockText: string, userFactsText: string): MetricTarget {
-  const role = stripDateNoise(preprocessCvSource(roleBlockText));
-  const user = stripDateNoise(preprocessCvSource(userFactsText));
-
-  const norm = (n: string) => n.replace(',', '.');
-
-  const findIn = (src: string): MetricTarget | null => {
-    // CR / konwersja
-    let m =
-      src.match(/konwersj\w*\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*%/i) ||
-      src.match(/\bcr\b\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*%/i) ||
-      src.match(/(\d+(?:[.,]\d+)?)\s*%\s*(?:konwersj\w*|\bcr\b)/i);
-    if (m) return { label: 'CR (konwersja)', anchor: `${norm(m[1])}%` };
-
-    // LTV
-    m =
-      src.match(/\bltv\b[^0-9]{0,15}(\d+(?:[.,]\d+)?)\s*(zł|zl|pln)\b/i) ||
-      src.match(/(\d+(?:[.,]\d+)?)\s*(zł|zl|pln)\b[^a-z]{0,15}\bltv\b/i);
-    if (m) return { label: 'LTV', anchor: `${norm(m[1])} zł` };
-
-    // CTR
-    m =
-      src.match(/\bctr\b\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*%/i) ||
-      src.match(/(\d+(?:[.,]\d+)?)\s*%\s*\bctr\b/i);
-    if (m) return { label: 'CTR', anchor: `${norm(m[1])}%` };
-
-    // błędy/incydenty
-    m = src.match(/błęd\w*[^0-9]{0,20}(\d+(?:[.,]\d+)?)\s*%/i);
-    if (m) return { label: 'błędy/incydenty', anchor: `${norm(m[1])}%` };
-
-    // fallback: pierwsza % lub PLN
-    m = src.match(/(\d+(?:[.,]\d+)?)\s*%/);
-    if (m) return { label: 'wynik (%)', anchor: `${norm(m[1])}%` };
-
-    m = src.match(/(\d+(?:[.,]\d+)?)\s*(zł|zl|pln)\b/i);
-    if (m) return { label: 'wynik (PLN)', anchor: `${norm(m[1])} zł` };
-
-    return null;
-  };
-
-  return findIn(user) || findIn(role) || { label: 'wynik' };
-}
-type RoleDomain = 'ECOM' | 'MARKETING' | 'SALES' | 'PM' | 'DEV' | 'QA' | 'SUPPORT' | 'ADMIN' | 'GENERIC';
-
-function inferRoleDomain(roleTitle: string, roleText: string): RoleDomain {
-  const t = `${roleTitle}\n${roleText}`.toLowerCase();
-
-  // Najpierw domeny “twarde”, żeby ticket/zgłoszenia nie zaciągnęły dev/qa do support
-  if (/(qa|tester|testy|manual|automatyzac|regresj|test case|bug report)/i.test(t)) return 'QA';
-  if (/(developer|dev|programist|frontend|backend|fullstack|react|node|typescript|java|python|git|code review|refaktor|deploy|ci\/cd)/i.test(t))
-    return 'DEV';
-
-  if (/(shopify|allegro|amazon|marketplace|e-?commerce|sku|listing|ofert)/i.test(t)) return 'ECOM';
-
-  if (/(performance marketing|marketing|google ads|meta ads|facebook ads|ppc|sem|seo|kampan|ads|kreac|social media|koordynator social)/i.test(t))
-    return 'MARKETING';
-
-  if (/(sprzedaż|sales|b2b|crm|lead|prospect|negocjac|ofert(y|owanie)?|cold call|outbound|inbound|pipeline|account manager)/i.test(t))
-    return 'SALES';
-
-  if (/(project manager|\bpm\b|kierownik projektu|zarządzanie projekt|jira|scrum|harmonogram|budżet|zakres|ryzyk)/i.test(t))
-    return 'PM';
-
-  // ✅ NOWE: SUPPORT (obsługa klienta)
-  if (/(obs[łl]uga klient|customer support|customer service|call ?center|helpdesk|service desk|ticket|zgłosze|reklamac|zwrot|refund|chat|infolini|mail|sla|first response|resolution)/i.test(t))
-    return 'SUPPORT';
-
-  // ✅ NOWE: ADMIN (administracja/back office)
-  if (/(administrac|back ?office|sekretariat|asystent|office manager|obieg dokument|faktur|invoice|dokumentac|archiw|korespondencj|zam[óo]wien|ewidencj|rozliczen|wprowadzanie danych|excel|raport)/i.test(t))
-    return 'ADMIN';
-
-  return 'GENERIC';
-}
-
-function buildContextQuestion(roleBlockText: string, userFactsText: string): string {
-  const target = pickMetricTargetForContext(roleBlockText, userFactsText);
-  const metricLine = target.anchor ? `${target.label} = ${target.anchor}` : target.label;
-
-  const hint = target.anchor
-    ? `Podpowiedź (na bazie opisu): wzrost/spadek ${target.label} z X do ${target.anchor} m/m (albo vs poprzedni okres).`
-    : `Podpowiedź: podaj baseline jako X → Y (np. m/m lub vs poprzedni okres).`;
-
-  return `Jaki był punkt odniesienia dla: ${metricLine}?\nPodaj baseline/zmianę (wystarczy 1 zdanie).\n${hint}`;
-}
-
 /** =========================
- *  Rewrite guard utils
+ *  Rewrite guard utils (plus bullet dedupe)
  *  ========================= */
 function extractNumbersLoose(text: string) {
   const t = normalizeNewlines(text);
@@ -2467,9 +1272,7 @@ function hasUnverifiedNumbers(rewriteText: string, allowedFacts: string) {
   const allowed = expandNumberVariants(allowedRaw);
 
   const gotRaw = extractNumbersLoose(rewriteText);
-  const suspicious = gotRaw.filter(
-    (n) => !allowed.has(n) && !allowed.has(n.replace(/,/g, '.')) && !allowed.has(n.replace(/\./g, ','))
-  );
+  const suspicious = gotRaw.filter((n) => !allowed.has(n) && !allowed.has(n.replace(/,/g, '.')) && !allowed.has(n.replace(/\./g, ',')));
   return suspicious.length > 0;
 }
 function hasBannedCausalPhrases(text: string) {
@@ -2504,17 +1307,21 @@ function enforceRewriteRoleHeaders(text: string, roleTitle: string) {
 function stripCvMetaAndFiller(text: string) {
   let t = normalizeNewlines(text);
 
-  const killMetaBullets = [/^\s*-?\s*Doprecyzuj.*$/gim, /^\s*-?\s*Dodaj.*$/gim];
+  const killMetaBullets = [
+    /^\s*-?\s*Doprecyzuj.*$/gim,
+    /^\s*-?\s*Dodaj.*$/gim,
+  ];
   for (const re of killMetaBullets) t = t.replace(re, '');
 
-  const killPhrases = [/zgodnie z opisem w before\.?/gi, /z twoich danych:?/gi, /jeśli dotyczy\.?/gi, /skala\s*:\s*/gi];
+  const killPhrases = [
+    /zgodnie z opisem w before\.?/gi,
+    /z twoich danych:?/gi,
+    /jeśli dotyczy\.?/gi,
+    /skala\s*:\s*/gi,
+  ];
   for (const re of killPhrases) t = t.replace(re, '');
 
   return t;
-}
-
-function escapeRegExp(s: string): string {
-  return (s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function repairRewriteBullets(text: string) {
@@ -2580,103 +1387,44 @@ function repairRewriteBullets(text: string) {
   return out.join('\n');
 }
 
-function fixRewriteVersionHeaderSpacing(input: string): string {
-  let t = input || '';
-
-  // Kanonizuj nagłówki (różne warianty z LLM)
-  t = t.replace(/wersja\s*a\s*\(\s*bezpieczna\s*\)\s*:/gi, 'Wersja A (bezpieczna):');
-  t = t.replace(/wersja\s*b\s*\(\s*mocniejsza\s*\)\s*:/gi, 'Wersja B (mocniejsza):');
-  t = t.replace(/wersja\s*a\s*:/gi, 'Wersja A (bezpieczna):');
-  t = t.replace(/wersja\s*b\s*:/gi, 'Wersja B (mocniejsza):');
-
-  // 1) WYMUSZAMY NOWĄ LINIĘ PRZED "Wersja B" jeśli jest przyklejona do poprzedniej
-  // np. "- cośtam Wersja B (mocniejsza):" -> "- cośtam\n\nWersja B (mocniejsza):"
-  t = t.replace(
-    /([^\n])\s*(Wersja B \(mocniejsza\):)/g,
-    '$1\n\n$2'
-  );
-
-  // 2) WYMUSZAMY, żeby po nagłówkach był enter (żeby bullety nie startowały w tej samej linii)
-  t = t.replace(/(Wersja A \(bezpieczna\):)\s*(?!\n)/g, '$1\n');
-  t = t.replace(/(Wersja B \(mocniejsza\):)\s*(?!\n)/g, '$1\n');
-
-  return t;
-}
-
-function enforceDashBulletsStrict(input: string): string {
-  const lines = (input || '').split('\n');
+function enforceDashBulletsStrict(text: string) {
+  const lines = normalizeNewlines(text).split('\n');
   const out: string[] = [];
-
-  let inAfter = false;
-  let inA = false;
-  let inB = false;
-
-  const isBeforeHeader = (s: string) => s.startsWith('=== BEFORE');
-  const isAfterHeader = (s: string) => s.startsWith('=== AFTER');
-  const isVersionA = (s: string) => /^wersja\s*a\b/i.test(s);
-  const isVersionB = (s: string) => /^wersja\s*b\b/i.test(s);
-  const isCta = (s: string) => /^chcesz poprawić kolejną rolę\??/i.test(s);
+  let mode: 'NONE' | 'A' | 'B' = 'NONE';
 
   for (const raw of lines) {
-    const s = (raw ?? '').trim();
+    const l = raw.trimEnd();
+    const t = l.trim();
 
-    if (isBeforeHeader(s)) {
-      inAfter = false;
-      inA = false;
-      inB = false;
-      out.push(s);
-      continue;
-    }
-
-    if (isAfterHeader(s)) {
-      inAfter = true;
-      inA = false;
-      inB = false;
-      out.push(s);
-      continue;
-    }
-
-    if (!inAfter) {
-      out.push(raw.trimEnd());
-      continue;
-    }
-
-    if (isVersionA(s)) {
-      inA = true;
-      inB = false;
+    if (/^Wersja A \(bezpieczna\):/i.test(t)) {
+      mode = 'A';
       out.push('Wersja A (bezpieczna):');
       continue;
     }
-
-    if (isVersionB(s)) {
-      inA = false;
-      inB = true;
+    if (/^Wersja B \(mocniejsza\):/i.test(t)) {
+      mode = 'B';
       out.push('Wersja B (mocniejsza):');
       continue;
     }
-
-    if (s === '') {
-      out.push('');
+    if (/^===\s*(BEFORE|AFTER)/i.test(t)) {
+      mode = 'NONE';
+      out.push(t);
       continue;
     }
-
-    if (isCta(s)) {
-      inA = false;
-      inB = false;
+    if (/^Chcesz poprawić kolejną rolę\?/i.test(t)) {
+      mode = 'NONE';
       out.push('Chcesz poprawić kolejną rolę?');
       continue;
     }
 
-    // Wymuszamy myślniki tylko w A/B
-    if (inA || inB) {
-      // normalizacja innych “bulletowych” prefixów
-      const bulletish = s.replace(/^[-–—•*]\s*/, '');
-      out.push(`- ${bulletish}`);
+    if (mode === 'A' || mode === 'B') {
+      if (!t) continue;
+      if (/^(doprecyzuj|dodaj)\b/i.test(t)) continue;
+      out.push(`- ${t.replace(/^-+\s*/g, '')}`);
       continue;
     }
 
-    // linie w AFTER ale poza A/B (np. komentarze) zostawiamy
-    out.push(raw.trimEnd());
+    out.push(l);
   }
 
   return out.join('\n');
@@ -2690,7 +1438,8 @@ function dedupeBulletsInAB(text: string) {
   const seenA = new Set<string>();
   const seenB = new Set<string>();
 
-  const normBullet = (s: string) => s.replace(/^\s*-\s*/g, '').trim().replace(/\s+/g, ' ').toLowerCase();
+  const normBullet = (s: string) =>
+    s.replace(/^\s*-\s*/g, '').trim().replace(/\s+/g, ' ').toLowerCase();
 
   for (const raw of lines) {
     const t = raw.trimEnd();
@@ -2732,19 +1481,12 @@ function dedupeBulletsInAB(text: string) {
   return out.join('\n');
 }
 
-function ensureRewriteCta(txt: string): string {
-  const CTA = 'Chcesz poprawić kolejną rolę?';
-  let t = normalizeNewlines(txt || '');
-
-  // usuń wszystkie istniejące CTA (czasem model wklei je kilka razy / z myślnikiem)
-  const ctaRe = /^[ \t]*-?[ \t]*Chcesz poprawić kolejną rolę\?\s*$/gim;
-  t = t.replace(ctaRe, '');
-
-  // wyczyść nadmiar pustych linii na końcu
-  t = t.replace(/\n{3,}/g, '\n\n').trimEnd();
-
-  // doklej CTA zawsze po jednej pustej linii i BEZ wcięć / bez myślnika
-  return `${t}\n\n${CTA}`.replace(/\n{3,}/g, '\n\n').trimEnd();
+function ensureRewriteCta(text: string) {
+  let t = normalizeNewlines(text).trim();
+  t = t.replace(/\s*Chcesz poprawić kolejną rolę\?\s*/gi, '\n');
+  t = dedupeConsecutiveLines(t);
+  t = t.trim();
+  return `${t}\nChcesz poprawić kolejną rolę?`.trim();
 }
 
 function rewriteLooksValid(text: string) {
@@ -2781,7 +1523,7 @@ function rewriteVersionsIdentical(text: string) {
 }
 
 /** =========================
- *  OpenAI call (unchanged)
+ *  OpenAI call (better error + timeout)
  *  ========================= */
 async function callOpenAI(
   apiKey: string,
@@ -2852,465 +1594,17 @@ function resolveSelectedRoleTitle(selected: string, rolesFromCv: Role[]) {
   return s;
 }
 
-function isSalesSupportRole(roleTitle: string, roleText: string) {
-  const s = `${roleTitle}\n${roleText}`.toLowerCase();
-  const titleHints = ['asystent', 'assistant'];
-  const salesHint = s.includes('sprzedaż') || s.includes('sprzedaz') || s.includes('sales');
-  const supportText =
-    s.includes('crm') ||
-    s.includes('ofert') ||
-    s.includes('zapytan') ||
-    s.includes('email') ||
-    s.includes('research') ||
-    s.includes('baza') ||
-    s.includes('wsparcie');
-
-  const noSelling = s.includes('nie sprzedawa') || s.includes('nie pozyskiwa');
-
-  return titleHints.some((h) => s.includes(h)) && salesHint && (supportText || noSelling);
-}
-
-function isSocialRole(roleTitle: string, roleText: string) {
-  const s = `${roleTitle}\n${roleText}`.toLowerCase();
-  const hints = [
-    'social media',
-    'koordynator social',
-    'social',
-    'community',
-    'moderac', // moderacja
-    'harmonogram',
-    'kalendarz treści',
-    'content',
-    'post',
-    'reels',
-    'relacj', // relacje
-    'stories',
-    'komentarz',
-    'dm',
-    'instagram',
-    'tiktok',
-    'facebook',
-    'linkedin',
-    'grafik',
-    'kreacj', // kreacje
-  ];
-  return hints.some((h) => s.includes(h));
-}
-
-// 2) tytuł roli ma pierwszeństwo (najstabilniejszy sygnał domeny)
-
-const Q_CONTEXT_FALLBACK =
-  'Jaki był punkt odniesienia (baseline) dla tego wyniku? Podaj baseline/zmianę (1 zdanie).';
-
-function buildScaleQuestion(roleTitle: string, roleText: string, cant: boolean): string {
-  const domain = inferRoleDomainWithTitleOverride(roleTitle, roleText);
-  const safe = cant ? ' Jeśli nie możesz podać wrażliwych danych — podaj proxy (widełki / % / trend / wolumen).' : '';
-
-  // ✅ SOCIAL OVERRIDE: organic SM != paid marketing
-  if (domain === 'MARKETING' && isSocialRole(roleTitle, roleText)) {
-    return cant
-      ? `Podaj proxy skali (1–2): #publikacji/tydz., #formatów (post/reels/stories), #komentarzy/DM dziennie, #obsługiwanych profili/marek, zasięg/wyświetlenia mies. Jeśli nie wiesz — podaj 1 z tych rzeczy.${safe}`
-      : `Podaj skalę (1–2): #publikacji/tydz., #formatów (post/reels/stories), #komentarzy/DM dziennie, #obsługiwanych profili/marek, zasięg/wyświetlenia mies.${safe}`;
-  }
-  // ✅ SALES SUPPORT OVERRIDE
-  if (domain === 'SALES' && isSalesSupportRole(roleTitle, roleText)) {
-    return cant
-      ? `Podaj skalę (proxy 1–2): #zapytania mailowe/dzień, #ofert przygotowanych/tydz., #aktualizacji CRM/dzień, #rekordów uzupełnionych/mies.${safe}`
-      : `Podaj skalę (1–2): #zapytania mailowe/dzień, #ofert przygotowanych/tydz., #aktualizacji CRM/dzień, #rekordów uzupełnionych/mies.${safe}`;
-  }
-
-  switch (domain) {
-    case 'MARKETING':
-      return `Podaj skalę działań (1–2 wskaźniki): budżet/spend mies., #kampanii aktywnych, #testów kreacji/A-B, #landingów, ruch/leady mies.${safe}`;
-    case 'ECOM':
-      return `Podaj skalę (1–2): #listingów/SKU, #zamówień mies., ruch mies., #kanałów/marketplace.${safe}`;
-    case 'SALES':
-      return `Podaj skalę (1–2): #cold call / tydz., #spotkań / mies., #ofert / kw., pipeline (widełki), #leadów.${safe}`;
-    case 'PM':
-      return `Podaj skalę (1–2): #projektów/streamów, #osób (zespół+dostawcy), budżet (widełki), #interesariuszy.${safe}`;
-    case 'DEV':
-      return `Podaj skalę (1–2): #ticketów / sprint, #PR / mies., #deploy / tydz., #serwisów/modułów, dyżury/on-call.${safe}`;
-    case 'QA':
-      return `Podaj skalę (1–2): #test case / sprint, #regresji / tydz., #bugów / mies., pokrycie (jeśli macie).${safe}`;
-    case 'SUPPORT':
-      return `Podaj skalę (1–2): #zgłoszeń / dzień (mail/chat/telefon), backlog, % eskalacji, SLA (czas 1. odpowiedzi).${safe}`;
-    case 'ADMIN':
-      return `Podaj skalę (1–2): #dokumentów / dzień (faktury/umowy), #rekordów / mies., czas obiegu, liczba procesów.${safe}`;
-    default:
-      return `Podaj skalę (1–2): wolumen (np. sprawy/tydz.), częstotliwość, liczba zadań, rozmiar procesu.${safe}`;
-  }
-}
-function buildResultQuestion(roleTitle: string, roleText: string, cant: boolean): string {
-  const domain = inferRoleDomainWithTitleOverride(roleTitle, roleText);
-  const safe = cant ? ' Jeśli nie możesz podać wrażliwych danych — podaj proxy (widełki / % / trend).' : '';
-
-  // ✅ SOCIAL OVERRIDE: wyniki dla organic SM
-  if (domain === 'MARKETING' && isSocialRole(roleTitle, roleText)) {
-    return cant
-      ? `Jaki był efekt? Podaj 1–2 proxy: wzrost followers (np. 8k→12k), zasięg/wyświetlenia mies., ER (engagement rate), średnie komentarze/post, czas reakcji na komentarze/DM, sentyment. Jeśli nie wiesz — podaj trend (%/widełki).${safe}`
-      : `Jaki był efekt? Podaj 1–2: wzrost followers (np. 8k→12k), zasięg/wyświetlenia mies., ER (engagement rate), średnie komentarze/post, czas reakcji na komentarze/DM, sentyment.${safe}`;
-  }
-
-  // ✅ SALES SUPPORT OVERRIDE
-  if (domain === 'SALES' && isSalesSupportRole(roleTitle, roleText)) {
-    return cant
-      ? `Jaki był efekt? Podaj 1–2 proxy: krótszy czas odpowiedzi na zapytania, mniej błędów w CRM/ofertach, więcej obsłużonych zapytań dziennie, poprawa SLA wewnętrznego.${safe}`
-      : `Jaki był efekt? Podaj 1–2: krótszy czas odpowiedzi na zapytania, mniej błędów w CRM/ofertach, więcej obsłużonych zapytań dziennie, lepsze SLA wewnętrzne.${safe}`;
-  }
-
-  switch (domain) {
-    case 'MARKETING':
-      return `Jaki był efekt? Podaj 1–2: ROAS / CPA / CAC / CTR / CR / przychód.${safe}`;
-    case 'ECOM':
-      return `Jaki był efekt? Podaj 1–2: CR / CTR / AOV / LTV / CAC / ROAS / ACOS.${safe}`;
-    case 'SALES':
-      return `Jaki był efekt? Podaj 1–2: win rate, #umów, przychód/MRR, pipeline (widełki), konwersja etapów.${safe}`;
-    case 'PM':
-      return `Jaki był efekt? Podaj 1–2: terminowość (on-time), budżet (variance), redukcja opóźnień, sukces release/adoption.${safe}`;
-    case 'DEV':
-      return `Jaki był efekt? Podaj 1–2: latency, error rate, uptime, MTTR, throughput.${safe}`;
-    case 'QA':
-      return `Jaki był efekt? Podaj 1–2: defect leakage, pass rate, spadek #bugów, coverage (jeśli macie).${safe}`;
-    case 'SUPPORT':
-      return `Jaki był efekt? Podaj 1–2: CSAT/NPS, SLA, czas 1. odpowiedzi, czas rozwiązania, % eskalacji.${safe}`;
-    case 'ADMIN':
-      return `Jaki był efekt? Podaj 1–2: czas obiegu, błędy (%), wolumen (np. dokumenty/dzień), automatyzacja/oszczędność czasu.${safe}`;
-    default:
-      return `Jaki był efekt? Podaj 1–2: oszczędność, SLA, mniej błędów, poprawa jakości / szybkości.${safe}`;
-  }
-}
-function buildSafeBullets(roleTitle: string, before: string, userFactsText: string) {
-  const src = `${before}\n${userFactsText || ''}`.replace(/\r\n/g, '\n');
-
-  // bierzemy linie/zdania które mają sens, bez wymyślania nowych faktów
-  const candidates = src
-    .split(/\n|\. /g)
-    .map(s => s.trim())
-    .filter(s => s.length >= 18)
-    .slice(0, 8)
-    .map(s => `- ${s.replace(/\.$/, '')}.`);
-
-  // A: “bezpieczna” = bardziej neutralna
-  const a = candidates.slice(0, 6);
-
-  // B: “mocniejsza” = ten sam sens, ale język “I did”
-  const b = a.map(l => l
-    .replace(/^- /, '- ')
-    .replace(/^-\s*(Uruchomienie|Kompleksowe|Analiza|Audyt|Monitorowanie|Standaryzacja)/i, '- Dowiozłem: $1')
-    .replace(/Dowiozłem:/i, 'Zrobiłem:')
-  );
-
-  // gwarancja min. 3 bulletów, ale nadal bez faktów z kosmosu
-  while (a.length < 3) a.push('- Realizacja kluczowych działań w obszarze e-commerce i optymalizacji oferty.');
-  while (b.length < 3) b.push('- Zrobiłem kluczowe działania w obszarze e-commerce i optymalizacji oferty.');
-
-  return { a, b };
-}
-function isEffectOk(answer: string) {
-  const a = (answer || '').trim();
-  if (!a) return false;
-
-  return (
-    /\d/.test(a) ||
-    /(terminow|w terminie|on[- ]?time|budżet.*(nie|bez).*przekrocz|w budżecie|variance|odchylen|zaakcept|przyjęt|go[- ]?live|wdroż)/i.test(a)
-  );
-}
-function inferAwaitingField(lastAssistantText: string) {
-  const t = (lastAssistantText || '');
-  if (/Jaki był efekt\??/i.test(t)) return 'EFFECT';
-  if (/Podaj skalę/i.test(t)) return 'SCALE';
-  return null;
-}
-
-function getLastUserText(messages: Message[]) {
-  return [...messages].reverse().find(m => m.role === 'user')?.content?.trim() ?? '';
-}
-function getLastAssistantText(messages: Message[]) {
-  return [...messages].reverse().find(m => m.role === 'assistant')?.content?.trim() ?? '';
-}
-function inferLastAskedKind(lastAssistantText: string): QuestionKind | null {
-  const t = String(lastAssistantText ?? '');
-  const s = t.toLowerCase();
-
-  if (looksLikeScaleQuestion(s)) return 'SCALE';
-  if (looksLikeResultQuestion(s)) return 'RESULT';
-  if (looksLikeContextQuestion(s)) return 'CONTEXT';
-
-  // PROCESS
-  if (s.includes('proces') || s.includes('narzędz') || s.includes('narzedz') || s.includes('crm')) {
-    return 'PROCESS';
-  }
-
-  // ACTIONS
-  if (s.includes('co zrobiłeś') || s.includes('co zrobiles') || s.includes('działani') || s.includes('dzialani')) {
-    return 'ACTIONS';
-  }
-
-  return null;
-}
-
-/**
- * Markuje "decline" (odmowa/brak danych).
- * UWAGA: To jest helper do STATE — nie ma tu prawa być NextResponse ani zależności od cvTextEffective/messages.
- */
-function applyDeclineFromUser(
-  state: InterviewState,
-  lastQk: QuestionKind | null,
-  lastUserText: string
-) {
-  if (!lastQk) return;
-
-  const cleaned = stripDateNoise(preprocessCvSource(lastUserText || ''));
-
-  // twarda odmowa / brak danych
-  if (userNonAnswer(cleaned) || userCannotShare(cleaned)) {
-    state.declinedCounts[lastQk] = (state.declinedCounts[lastQk] || 0) + 1;
-    return;
-  }
-
-  // CONTEXT: jeśli user nie podał żadnego sygnału baseline/kontekstu → traktujemy jako decline
-  // (luźny kontekst typu "vs poprzedni okres" itp. powinien łapać hasBaselineContextSignal)
-  if (lastQk === 'CONTEXT') {
-    const hasAnyContext = hasBaselineContextSignal(cleaned);
-    if (!hasAnyContext) {
-      state.declinedCounts[lastQk] = (state.declinedCounts[lastQk] || 0) + 1;
-    }
-  }
-}
-const UNKNOWN = '__UNKNOWN__';
-
-function normalizeAnswerForFacts(text: string): string {
-  const s = (text ?? '').trim().replace(/\s+/g, ' ');
-  if (!s) return '';
-  if (/^(brak danych|brak|nie wiem|n\/a)$/i.test(s)) return UNKNOWN;
-  return s;
-}
-
-function lastText(messages: { role: string; content: string }[], role: string): string {
-  return [...messages].reverse().find(m => m.role === role)?.content ?? '';
-}
-function stripListPrefix(line: string): { prefix: string; core: string } {
-  const s = String(line ?? '');
-  const m = s.match(/^(\s*(?:[-–—*•]\s+)?)((?:.|\n)*)$/);
-  return { prefix: m?.[1] ?? '', core: m?.[2] ?? s };
-}
-function isValidBaselineAnswer(ans: string): boolean {
-  const s = String(ans ?? '').trim();
-  if (!s) return false;
-  if (/^\d{1,2}$/.test(s)) return false;
-
-  return (
-    /(?:\bvs\b|m\/m|q\/q|y\/y|r\/r|rok do roku|baseline|punkt odniesienia)/i.test(s) ||
-    /(?:\d+\s*(?:→|->)\s*\d+)/.test(s) ||
-    /(?:z\s*\d+[^\n]{0,30}\s*do\s*\d+)/i.test(s) ||
-    /(?:\d+\s*(?:%|proc\.?|procent))/i.test(s)
-  );
-}
-function cleanRewriteArtifacts(out: string): string {
-  const lines = String(out ?? '').split('\n');
-  const cleaned: string[] = [];
-
-  for (const line of lines) {
-    const { prefix, core } = stripListPrefix(line);
-    const c = core.trim();
-    const low = c.toLowerCase();
-
-    // wycinamy “wycieki” z promptu / latcha (także gdy są w bulletach)
-    if (
-      low.startsWith('baseline/kontekst') ||
-      low.startsWith('result (z ') ||
-      low.startsWith('kontekst (z ') ||
-      low.startsWith('efekt (doprecyzowanie') ||
-      low.startsWith('punkt odniesienia') ||
-      low.includes('z ostatniej odpowiedzi usera')
-    ) {
-      continue;
-    }
-
-    // usuwamy “Realizacja:”
-    if (/^realizacja\s*:/i.test(c)) {
-      const after = c.replace(/^realizacja\s*:\s*/i, '').trim();
-      if (!after) continue;
-      cleaned.push(`${prefix}${after}`);
-      continue;
-    }
-
-    cleaned.push(line);
-  }
-
-  return cleaned.join('\n');
-}
-function looksLikeResultQuestion(text: string): boolean {
-  const s = String(text ?? '').toLowerCase();
-
-  // jeśli to CONTEXT, to nie może być RESULT
-  if (looksLikeContextQuestion(s)) return false;
-
-  // realne pytanie/prośba o efekt
-  return (
-    /\bjaki\s+by[lł]\s+(efekt|wynik)\b/i.test(s) ||
-    /\bpodaj\s+(efekt|wynik|rezultat)\b/i.test(s)
-  );
-}
-
-function looksLikeScaleQuestion(text: string): boolean {
-  const s = String(text ?? '').toLowerCase();
-  // tylko skala/proxy skali
-  return (
-    /\bpodaj\s+(proxy\s+)?skal[ęe]\b/i.test(s) ||
-    /\bskal[ęe]\s+dzia[lł]a[nń]\b/i.test(s) ||
-    /\bproxy\s+skali\b/i.test(s)
-  );
-}
-function looksLikeContextQuestion(text: string): boolean {
-  const s = String(text ?? '').toLowerCase();
-
-  // MUSI wyglądać jak realne pytanie/prośba o baseline,
-  // a nie opis braków typu "braki: kontekst (baseline/zmiana)"
-  const hasAskVerb =
-    s.includes('podaj') ||
-    s.includes('jaki był') ||
-    s.includes('jaki byl') ||
-    s.includes('?');
-
-  if (!hasAskVerb) return false;
-
-  return (
-    s.includes('punkt odniesienia') ||
-    s.includes('podaj baseline') ||
-    s.includes('podaj kontekst') ||
-    s.includes('podaj baseline/zmian') ||
-    s.includes('baseline/zmian') || // ale tylko gdy hasAskVerb jest true
-    /\bx\s*(?:→|->)\s*y\b/i.test(s) ||
-    s.includes('vs poprzedni') ||
-    s.includes('m/m')
-  );
-}
-
-function extractUserOnlyText(messages: any[]): string {
-  return (messages || [])
-    .filter((m) => m?.role === 'user')
-    .map((m) => String(m?.content ?? ''))
-    .join('\n');
-}
-function looksLikeDeclineAnswer(text: string): boolean {
-  const s = String(text ?? '').toLowerCase().trim();
-  return (
-    s === '?' ||
-    s.includes('nie wiem') ||
-    s.includes('brak danych') ||
-    s.includes('nie pamiętam') ||
-    s.includes('nie mogę podać') ||
-    s.includes('nie moge podac') ||
-    s.includes('nie podam')
-  );
-}
-function buildInterviewStateFromMessages(messages: any[]): InterviewState {
-  const state: InterviewState = {
-    askedCounts: { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0, CONTEXT: 0 },
-    declinedCounts: { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0, CONTEXT: 0 },
-    askedTotal: 0,
-  };
-
-  const detectAskedKind = (assistantText: string): QuestionKind | null => {
-    const a = String(assistantText ?? '').toLowerCase();
-
-    // kolejność ważna: najbardziej jednoznaczne najpierw
-    if (looksLikeScaleQuestion(a)) return 'SCALE';
-    if (looksLikeResultQuestion(a)) return 'RESULT';
-
-    // CONTEXT/baseline
-    if (
-      a.includes('punkt odniesienia') ||
-      a.includes('baseline') ||
-      a.includes('x → y') ||
-      a.includes('x->y') ||
-      a.includes('x do y') ||
-      a.includes('podaj baseline') ||
-      a.includes('podaj kontekst')
-    ) {
-      return 'CONTEXT';
-    }
-
-    // PROCESS
-    if (a.includes('proces') || a.includes('narzędz') || a.includes('narzedz') || a.includes('crm')) {
-      return 'PROCESS';
-    }
-
-    // ACTIONS
-    if (a.includes('co zrobiłeś') || a.includes('co zrobiles') || a.includes('działani') || a.includes('dzialani')) {
-      return 'ACTIONS';
-    }
-
-    return null;
-  };
-
-  let lastAsked: QuestionKind | null = null;
-
-  for (const m of messages || []) {
-    const role = m?.role;
-    const text = String(m?.content ?? '');
-
-    if (role === 'assistant') {
-      const kind = detectAskedKind(text);
-      if (kind) {
-        state.askedCounts[kind] += 1;
-        state.askedTotal += 1;
-        lastAsked = kind;
-      } else {
-        lastAsked = null;
-      }
-    }
-
-    if (role === 'user') {
-      if (lastAsked && looksLikeDeclineAnswer(text)) {
-        state.declinedCounts[lastAsked] += 1;
-        lastAsked = null;
-      }
-    }
-  }
-
-  return state;
-}
-function rewriteHasStrictDashBullets(txt: string): boolean {
-  const t = txt || '';
-  const mA = t.match(/Wersja A[\s\S]*?\n([\s\S]*?)\nWersja B/i);
-  const mB = t.match(/Wersja B[\s\S]*?\n([\s\S]*?)(\nChcesz poprawić|\s*$)/i);
-  if (!mA || !mB) return false;
-
-  const bulletsA = mA[1].split('\n').filter(l => l.trim().startsWith('- '));
-  const bulletsB = mB[1].split('\n').filter(l => l.trim().startsWith('- '));
-
-  // 3–8 bulletów, i żadnych “gołych” linii tekstu w A/B
-  const nonEmptyA = mA[1].split('\n').map(l=>l.trim()).filter(Boolean);
-  const nonEmptyB = mB[1].split('\n').map(l=>l.trim()).filter(Boolean);
-  const allAreBulletsA = nonEmptyA.every(l => l.startsWith('- '));
-  const allAreBulletsB = nonEmptyB.every(l => l.startsWith('- '));
-
-  return (
-    bulletsA.length >= 3 && bulletsA.length <= 8 &&
-    bulletsB.length >= 3 && bulletsB.length <= 8 &&
-    allAreBulletsA && allAreBulletsB
-  );
-}
 /** =========================
  *  POST handler
  *  ========================= */
 export async function POST(req: NextRequest) {
   try {
-    let rawJson: any;
-    try {
-      rawJson = await req.json();
-    } catch {
-      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
-    }
+    const body: RequestBody = await req.json();
+    const { messages, cvText, selectedRoleTitle } = body;
 
-    const validated = validateRequestBody(rawJson);
-    if (!validated.ok) {
-      return NextResponse.json({ error: validated.error }, { status: validated.status });
+    if (!messages || !Array.isArray(messages)) {
+      return NextResponse.json({ error: 'Messages array is required' }, { status: 400 });
     }
-
-    const { messages, cvText, selectedRoleTitle: selectedRoleTitleFromBody } = validated.body;
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
@@ -3323,434 +1617,277 @@ export async function POST(req: NextRequest) {
     const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
     const modelRewrite = process.env.OPENAI_MODEL_REWRITE || model;
 
-    // buduj “effective CV” (bazowe cvText + ewentualne późniejsze wklejki multi-role)
     const cvTextEffective = buildCvTextEffective(cvText, messages);
-    const cvEffectiveClean = preprocessCvSource(cvTextEffective || '');
-
     const mode = detectMode(messages, cvTextEffective);
 
-    const rolesFromCv = dedupeRoles(extractRolesFromCvText(cvEffectiveClean));
+    // === AUDIT_ONLY ===
+    if (mode === 'AUDIT_ONLY') {
+      const firstUser = preprocessCvSource(messages.find((m) => m.role === 'user')?.content || '');
+      const effective = cvTextEffective || firstUser;
 
-    const lastUserRaw = [...messages].reverse().find((m) => m.role === 'user')?.content ?? '';
-const lastAssistantRaw = [...messages].reverse().find((m) => m.role === 'assistant')?.content ?? '';
+      const roles = dedupeRoles(extractRolesFromCvText(effective));
 
-const lastUserClean = preprocessCvSource(lastUserRaw).trim();
-const lastAssistantClean = String(lastAssistantRaw || '').trim();
+      if (roles.length === 1) {
+        const roleTitle = roles[0].title;
+        const roleBlock = extractRoleBlock(effective, roleTitle) || effective;
+        const allText = `${roleBlock}\n${effective}`;
 
-const lastAskedForContext = looksLikeContextQuestion(lastAssistantClean);
+        const factsFromRole = extractInterviewFactsFromText(roleBlock);
+        const shouldProcess = shouldAskAcquisitionProcess(roleTitle, allText);
+        const state: InterviewState = {
+          askedCounts: { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0 },
+          declinedCounts: { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0 },
+          askedTotal: 0,
+        };
 
-const rawContextAnswer =
-  lastAskedForContext && !looksLikeDeclineAnswer(lastUserClean)
-    ? normalizeAnswerForFacts(lastUserClean)
-    : '';
+        const step = decideNextInterviewStep(shouldProcess, factsFromRole, state);
+        const q = step.kind === 'ASK' ? step.question : Q_RESULT;
 
-const latchedContextAnswer = isValidBaselineAnswer(rawContextAnswer) ? rawContextAnswer : '';
+        const hint = step.kind === 'ASK' ? buildHintForQuestion(step.qk, roleBlock) : '';
+        const msg = `Ok, w takim razie zacznijmy od „${roleTitle}”. ${q}${hint ? `\n${hint}` : ''}`;
+        return NextResponse.json({ assistantText: normalizeForUI(msg, 1) });
+      }
 
-const lastAskedForResult = looksLikeResultQuestion(lastAssistantClean);
+      const audit = buildAudit(effective);
+      return NextResponse.json({ assistantText: normalizeForUI(audit, 1) });
+    }
 
-const latchedResultAnswer = (() => {
-  if (!lastAskedForResult) return '';
-  const s = normalizeAnswerForFacts(lastUserClean);
-  if (!s) return '';
-  if (looksLikeDeclineAnswer(s)) return '__UNKNOWN__';
-  if (/^\d{1,2}$/.test(s.trim())) return ''; // menu-picki typu “1”
-  return s.trim();
-})();
+    // === NORMAL ===
+    const lastUser = preprocessCvSource(messages.slice().reverse().find((m) => m.role === 'user')?.content || '');
+    const lastAssistant = messages.slice().reverse().find((m) => m.role === 'assistant')?.content || '';
 
-    /** =========================
- *  AUDIT_ONLY
- *  ========================= */
-if (mode === 'AUDIT_ONLY') {
-  const firstUser = preprocessCvSource(messages.find((m) => m.role === 'user')?.content || '');
-  const effective = preprocessCvSource(cvTextEffective || firstUser);
+    const assistantWasAudit = isAudit(lastAssistant) && auditHasNumbering(lastAssistant);
+    const rolesInAudit = assistantWasAudit ? countAuditRoles(lastAssistant) : 0;
 
-  let roles = dedupeRoles(extractRolesFromCvText(effective));
-  if (roles.length === 0) {
-    const inferred = inferSingleRoleFromLooseText(effective);
-    if (inferred) roles = [inferred];
-  }
+    const chosenNum = assistantWasAudit ? extractChosenNumber(lastUser, 20) : null;
 
-  const suspiciousSingle = looksLikeMultiRoleButParsedSingle(effective, roles.length);
+    let chosenRoleTitle = '';
+    if (assistantWasAudit && chosenNum === null) {
+      const titles = extractAllRoleTitlesFromAudit(lastAssistant);
+      const uKey = keyify(lastUser);
+      const hit = titles.find((t) => (uKey && keyify(t).includes(uKey)) || uKey.includes(keyify(t)));
+      if (hit) chosenRoleTitle = hit;
+    }
+    if (assistantWasAudit && chosenNum !== null) {
+      chosenRoleTitle = extractRoleTitleFromAuditByNumber(lastAssistant, chosenNum);
+    }
 
-  // jeśli faktycznie 1 rola i parser jest “pewny” -> od razu interview
-  if (!suspiciousSingle && roles.length === 1) {
-    const roleTitle = roles[0].title;
+    if (assistantWasAudit && !chosenRoleTitle) {
+      const msg = rolesInAudit > 0 ? `Wybierz numer roli: 1–${rolesInAudit}` : 'Wybierz numer roli z listy.';
+      return NextResponse.json({ assistantText: normalizeForUI(msg, 1) });
+    }
 
-    const roleBlockStrict = extractRoleBlock(effective, roleTitle) || '';
-    const roleBlockText = preprocessCvSource(roleBlockStrict);
+    const assistantWasRewrite = isRewrite(lastAssistant);
+    const continueNextRole = assistantWasRewrite && userWantsContinueAfterRewrite(lastUser);
 
-    const allText = preprocessCvSource(`${roleBlockText}\n${effective}`);
+    const rolesFromCv = dedupeRoles(extractRolesFromCvText(cvTextEffective || ''));
 
-    // 1) Fakty z CV + fakty z odpowiedzi usera (żeby interview szło do przodu)
-    const userOnlyText = preprocessCvSource(
-      messages
-        .filter((m) => m.role === 'user')
-        .map((m) => m.content || '')
-        .join('\n')
+    const processedKeys = getProcessedRoleKeys(messages);
+    const nextRoleTitle = continueNextRole ? findNextUnprocessedRoleTitle(rolesFromCv, processedKeys) : '';
+    const hasNextRole = continueNextRole && !!nextRoleTitle;
+
+    if (continueNextRole && !hasNextRole) {
+      const msg =
+        rolesFromCv.length === 0
+          ? 'Ok. Wklej proszę sekcję „Doświadczenie” (stanowiska + opisy).'
+          : 'Ok. Przerobiliśmy już wszystkie role, które wkleiłeś. Wklej kolejne stanowisko, a lecimy dalej.';
+      return NextResponse.json({ assistantText: normalizeForUI(msg, 1) });
+    }
+
+    const roleFromClientResolved = resolveSelectedRoleTitle((selectedRoleTitle || '').trim(), rolesFromCv);
+    const roleFromHistory = findLastRoleTitleInConversation(messages);
+    const roleFallbackFromCv = rolesFromCv[0]?.title || '';
+
+    const roleTitleForTurn =
+      (hasNextRole && nextRoleTitle) ||
+      chosenRoleTitle ||
+      roleFromClientResolved ||
+      roleFromHistory ||
+      roleFallbackFromCv ||
+      'WYBRANA ROLA';
+
+    const startingNextRoleNow = hasNextRole;
+    const startingChosenRoleNow = assistantWasAudit && !!chosenRoleTitle;
+
+    const interviewStartIdxBase = findInterviewStartIndex(messages);
+    const interviewStartIdx = startingNextRoleNow || startingChosenRoleNow ? messages.length : interviewStartIdxBase;
+
+    const userFactsText = preprocessCvSource(collectUserAnswers(messages, interviewStartIdx).join('\n'));
+    const roleBlock = extractRoleBlock(cvTextEffective || '', roleTitleForTurn);
+    const roleBlockText = preprocessCvSource(roleBlock || '');
+
+    const allUserTextForHeuristics = preprocessCvSource(
+      messages.filter((m) => m.role === 'user').map((m) => m.content).join('\n')
     );
 
-    const factsFromRole = extractInterviewFactsFromText(roleBlockText || effective);
+    const shouldAskProcess = shouldAskAcquisitionProcess(roleTitleForTurn, `${roleBlockText}\n${allUserTextForHeuristics}`);
 
-// Anti-loop latch: jeżeli ostatnio pytaliśmy o EF EKT (RESULT) i user odpowiedział sensownie,
-// uznajemy, że "wynik mamy" i nie pytamy ponownie.
-if (
-  lastAskedForResult &&
-  latchedResultAnswer &&
-  latchedResultAnswer !== '__UNKNOWN__' &&
-  !/^brak danych$/i.test(String(latchedResultAnswer).trim())
-) {
-  factsFromRole.hasResult = true;
-}
+    const factsFromRole = extractInterviewFactsFromText(roleBlockText);
+    const factsFromUser = extractInterviewFactsFromText(userFactsText);
 
-// Anti-loop latch: jeżeli ostatnio pytaliśmy o baseline/kontekst (CONTEXT) i user odpowiedział sensownie,
-// uznajemy, że "kontekst mamy" i nie pytamy ponownie.
-if (lastAskedForContext && latchedContextAnswer) {
-  factsFromRole.hasContext = true;
-  factsFromRole.needsContext = false;
-}
-
-    const factsFromUser = extractInterviewFactsFromText(userOnlyText);
-
-    let facts: InterviewFacts = {
+    const facts: InterviewFacts = {
       hasActions: factsFromRole.hasActions || factsFromUser.hasActions,
       hasScale: factsFromRole.hasScale || factsFromUser.hasScale,
       hasProcess: factsFromRole.hasProcess || factsFromUser.hasProcess,
       hasResult: factsFromRole.hasResult || factsFromUser.hasResult,
-      hasContext: factsFromRole.hasContext || factsFromUser.hasContext,
-      needsContext: (factsFromRole.needsContext || factsFromUser.needsContext) && !(factsFromRole.hasContext || factsFromUser.hasContext),
     };
 
-    // 2) Anti-loop latch: jeśli ostatnio pytaliśmy o efekt/baseline, a user coś odpisał,
-    //    to ZAMYKAMY "RESULT" (MVP: lepiej iść dalej niż pytać w kółko)
-    const lastAssistant = preprocessCvSource(
-      [...messages].reverse().find((m) => m.role === 'assistant')?.content || ''
-    );
-    const lastUser = preprocessCvSource(
-      [...messages].reverse().find((m) => m.role === 'user')?.content || ''
-    );
-    const latched = normalizeAnswerForFacts(lastUser);
+    const state =
+      startingNextRoleNow || startingChosenRoleNow
+        ? {
+            askedCounts: { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0 },
+            declinedCounts: { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0 },
+            askedTotal: 0,
+          }
+        : computeInterviewState(messages, interviewStartIdx);
 
-    if (looksLikeResultQuestion(lastAssistant) && latched) {
-      facts = { ...facts, hasResult: true, needsContext: false };
-    }
+    const step = decideNextInterviewStep(shouldAskProcess, facts, state);
 
-    const shouldProcess = shouldAskAcquisitionProcess(roleTitle, allText);
+    if (step.kind === 'ASK') {
+      let question = step.question;
 
-    // 3) Stan NIE może być zerowany — wyciągamy go z historii messages
-    const state: InterviewState = buildInterviewStateFromMessages(messages);
+      const cant = userCannotShare(lastUser) || userNonAnswer(lastUser);
 
-    const step = decideNextInterviewStep(shouldProcess, facts, state);
+      if (question === Q2 && cant) question = Q2_SAFE;
+      if (question === Q_RESULT && cant) question = Q_RESULT_SAFE;
 
-let q = '';
-if (step.kind === 'ASK') {
-  if (step.qk === 'SCALE') {
-    q = buildScaleQuestion(roleTitle, roleBlockText || roleTitle, false);
-  } else if (step.qk === 'RESULT') {
-    q = buildResultQuestion(roleTitle, roleBlockText || roleTitle, false);
-  } else if (step.qk === 'CONTEXT') {
-    q = buildContextQuestion(roleBlockText || roleTitle, '');
-  } else if (step.qk === 'PROCESS') {
-    q = Q_PROCESS;
-  } else if (step.qk === 'ACTIONS') {
-    q = Q1;
-  } else {
-    // fallback (gdyby kiedyś doszedł nowy qk)
-    q = String(step.question ?? '');
-  }
-}
-
-    const hint =
-      step.kind === 'ASK' && (step.qk === 'ACTIONS' || step.qk === 'PROCESS')
-        ? buildHintForQuestion(step.qk, roleBlockText || roleTitle)
-        : '';
-
-    const msg = `Ok, w takim razie zacznijmy od „${roleTitle}”.\n${q}${hint ? `\n${hint}` : ''}`;
-    return NextResponse.json({ assistantText: normalizeForUI(msg, 1) });
-  }
-
-  const audit = buildAudit(effective);
-  return NextResponse.json({ assistantText: normalizeForUI(audit, 1) });
-}
-
-    /** =========================
-     *  NORMAL
-     *  ========================= */
-
-    // Jeśli user wkleił nowe multi-role Doświadczenie w trakcie NORMAL -> pokaż audit (nie mieszaj z Q&A)
-    if (looksLikeMultiRoleExperiencePasteStrong(lastUserRaw)) {
-      const effective = preprocessCvSource(cvTextEffective || lastUserRaw);
-      const audit = buildAudit(effective);
-      return NextResponse.json({ assistantText: normalizeForUI(audit, 1) });
-    }
-
-    // 1) CONTINUE po rewrite (automatycznie następna rola)
-    if (isPostRewritePrompt(lastAssistantClean) && userWantsContinueAfterRewrite(lastUserRaw)) {
-      const effective = preprocessCvSource(cvTextEffective || '');
-      const roles = dedupeRoles(extractRolesFromCvText(effective));
-
-      const processed = getProcessedRoleKeys(messages);
-      const nextRoleTitle = findNextUnprocessedRoleTitle(roles, processed);
-
-      if (!nextRoleTitle) {
-        const doneMsg = `Nie widzę kolejnych ról do przerobienia. Jeśli chcesz, wklej kolejną część Doświadczenia albo wybierz inną rolę z audytu.`;
-        return NextResponse.json({ assistantText: normalizeForUI(doneMsg, 1) });
-      }
-
-      const roleBlockStrict = extractRoleBlock(effective, nextRoleTitle) || '';
-      const roleBlockText = preprocessCvSource(roleBlockStrict);
-
-      const allText = preprocessCvSource(`${roleBlockText}\n${effective}`);
-      const factsFromRole = extractInterviewFactsFromText(roleBlockText || effective);
-      const shouldProcess = shouldAskAcquisitionProcess(nextRoleTitle, allText);
-
-      const freshState: InterviewState = {
-        askedCounts: { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0, CONTEXT: 0 },
-        declinedCounts: { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0, CONTEXT: 0 },
-        askedTotal: 0,
-      };
-
-      const step = decideNextInterviewStep(shouldProcess, factsFromRole, freshState);
-
-      let q = '';
-      if (step.kind === 'ASK') {
-        if (step.qk === 'ACTIONS') q = Q1;
-        if (step.qk === 'SCALE') q = buildScaleQuestion(nextRoleTitle, roleBlockText || nextRoleTitle, false);
-        if (step.qk === 'PROCESS') q = Q_PROCESS;
-        if (step.qk === 'RESULT') q = buildResultQuestion(nextRoleTitle, roleBlockText || nextRoleTitle, false);
-        if (step.qk === 'CONTEXT') q = buildContextQuestion(roleBlockText || nextRoleTitle, '');
-      } else {
-        // jeśli z samego bloku wszystko jest -> od razu rewrite
-        q = buildResultQuestion(nextRoleTitle, roleBlockText || nextRoleTitle, false);
-      }
-
-      const hint =
-        step.kind === 'ASK' && (step.qk === 'ACTIONS' || step.qk === 'PROCESS')
-          ? buildHintForQuestion(step.qk, roleBlockText || nextRoleTitle)
+      const prefix = startingNextRoleNow
+        ? `Ok, lecimy dalej — teraz „${roleTitleForTurn}”. `
+        : startingChosenRoleNow
+          ? `Ok, w takim razie zacznijmy od „${roleTitleForTurn}”. `
           : '';
 
-      const msg = `Lecimy dalej — teraz „${nextRoleTitle}”.\n${q}${hint ? `\n${hint}` : ''}`;
+      const hint = buildHintForQuestion(step.qk, roleBlockText || roleTitleForTurn);
+      const deterministic = normalizeForUI(stripLeadingIndentAllLines(`${prefix}${question}${hint ? `\n${hint}` : ''}`), 1);
+      return NextResponse.json({ assistantText: deterministic });
+    }
+
+    // === REWRITE ===
+    const openAIMessages: Array<{ role: string; content: string }> = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: CONTEXT_PROMPT },
+      {
+        role: 'system',
+        content:
+          `Wygeneruj gotowy fragment DO WKLEJENIA DO CV (bez meta-komentarzy).\n` +
+          `- Tylko rola: „${roleTitleForTurn}”.\n` +
+          `- Popraw literówki z inputu (NIE zmieniaj liczb ani sensu faktów).\n` +
+          `- Format musi być dokładnie:\n` +
+          `=== BEFORE (${roleTitleForTurn}) ===\n(4–12 linii)\n=== AFTER (${roleTitleForTurn}) ===\n` +
+          `Wersja A (bezpieczna):\n- ... (3–8 bulletów, 1 linia = 1 bullet)\n` +
+          `Wersja B (mocniejsza):\n- ... (3–8 bulletów, 1 linia = 1 bullet)\n` +
+          `Chcesz poprawić kolejną rolę?\n\n` +
+          `Zasady:\n` +
+          `- Każdy bullet zaczyna się od "- " i jest gotowy do CV.\n` +
+          `- Wersja B MUSI różnić się od A (inna struktura + inne ujęcie, nie kopia).\n` +
+          `- Zero meta-fraz typu: "zgodnie z opisem", "z Twoich danych", "jeśli dotyczy", "Skala:".\n` +
+          `- Nie dodawaj faktów ani liczb, których użytkownik nie podał.\n` +
+          `- NIE przenoś metryk między rolami (używaj tylko danych tej roli).\n` +
+          `- Usuń twarde łamanie w środku zdań (hard-wrap).\n`,
+      },
+    ];
+
+    const block = roleBlockText || preprocessCvSource(cvTextEffective || '');
+    if (block.trim()) {
+      openAIMessages.push({ role: 'user', content: `[WYBRANA ROLA — ŹRÓDŁO]\n${block}` });
+    }
+    if (userFactsText.trim()) {
+      openAIMessages.push({ role: 'user', content: `[FAKTY OD UŻYTKOWNIKA — TYLKO DLA TEJ ROLI]\n${userFactsText}` });
+    }
+
+    let assistantText = '';
+    try {
+      assistantText = await callOpenAI(apiKey, modelRewrite, openAIMessages, 0.2);
+    } catch (e: any) {
+      const msg =
+        `Błąd połączenia z OpenAI API: ${e?.message || 'fetch failed'}.\n` +
+        `Jeśli uruchamiasz to w preview/webcontainer, możliwe że środowisko blokuje połączenia wychodzące.\n` +
+        `Odpal lokalnie albo po deployu (np. Vercel) i spróbuj ponownie.`;
       return NextResponse.json({ assistantText: normalizeForUI(msg, 1) });
     }
 
-    // 2) Rozpoznaj wybraną rolę:
-    const effective = preprocessCvSource(cvTextEffective || lastUserRaw || '');
-    const roles = dedupeRoles(extractRolesFromCvText(effective));
+    // === GUARD + FORMAT ===
+    let allowedFacts = `${roleBlockText}\n\n${userFactsText}`.trim();
+    if (!allowedFacts) allowedFacts = roleBlockText || preprocessCvSource(cvTextEffective || '');
 
-    // 2a) UI dropdown
-    let selectedRoleTitle = resolveSelectedRoleTitle(selectedRoleTitleFromBody || '', roles);
+    const finalize = (txt: string) => {
+      let t = txt;
+      t = stripFencedCodeBlock(t);
+      t = stripLeadingIndentAllLines(t);
+      t = enforceRewriteRoleHeaders(t, roleTitleForTurn);
+      t = stripCvMetaAndFiller(t);
+      t = repairRewriteBullets(t);
+      t = enforceDashBulletsStrict(t);
+      t = dedupeBulletsInAB(t);
+      t = dedupeConsecutiveLines(t);
+      t = ensureRewriteCta(t);
+      t = normalizeForUI(t, 1);
+      return t;
+    };
 
-    // 2b) wybór numerem po audycie
-    if (!selectedRoleTitle && isJustNumberChoice(lastUserRaw)) {
-      const n = extractChosenNumber(lastUserRaw, 20);
-      if (n) {
-        // spróbuj wyciągnąć title z OSTATNIEGO audytu (dokładniej)
-        const lastAuditMsg = [...messages].reverse().find((m) => m.role === 'assistant' && isAudit(m.content))?.content || '';
-        const fromAudit = lastAuditMsg ? extractRoleTitleFromAuditByNumber(lastAuditMsg, n) : '';
-        if (fromAudit) selectedRoleTitle = fromAudit;
-        else if (roles[n - 1]) selectedRoleTitle = roles[n - 1].title;
-      }
-    }
+    assistantText = finalize(assistantText);
 
-    // 2c) kontynuacja aktualnej roli z konwersacji
-    if (!selectedRoleTitle) {
-      selectedRoleTitle = findLastRoleTitleInConversation(messages);
-    }
+    let needsFix =
+      !rewriteLooksValid(assistantText) ||
+      rewriteVersionsIdentical(assistantText) ||
+      hasUnverifiedNumbers(assistantText, allowedFacts) ||
+      hasBannedCausalPhrases(assistantText);
 
-    // Jeśli nadal nic — pokaż audit albo poproś o wklejkę doświadczenia
-    if (!selectedRoleTitle) {
-      if (!effective.trim()) {
-        const msg = `Na MVP pracujemy tylko na sekcji Doświadczenie.\nWklej Doświadczenie (stanowiska + daty + opis), a zrobię audyt i wybór roli.`;
+    // formatter tries (max 2)
+    for (let attempt = 0; attempt < 2 && needsFix; attempt++) {
+      const formatterMessages: Array<{ role: string; content: string }> = [
+        {
+          role: 'system',
+          content:
+            `Jesteś FORMATTEREM. Napraw tekst do formatu CV bez dodawania faktów.\n` +
+            `- Tylko rola: "${roleTitleForTurn}".\n` +
+            `- Wersja B musi różnić się od A.\n` +
+            `- Zero meta.\n` +
+            `- Nie dodawaj liczb spoza źródeł.\n` +
+            `- A i B: 3–8 bulletów, każdy w 1 linii i zaczyna się od "- ".\n` +
+            `- Usuń hard-wrap.\n` +
+            `- Na końcu: Chcesz poprawić kolejną rolę?\n\n` +
+            `Wymagany format:\n` +
+            `=== BEFORE (${roleTitleForTurn}) ===\n` +
+            `(4–12 linii)\n` +
+            `=== AFTER (${roleTitleForTurn}) ===\n` +
+            `Wersja A (bezpieczna):\n` +
+            `- ...\n` +
+            `Wersja B (mocniejsza):\n` +
+            `- ...\n\n` +
+            `Chcesz poprawić kolejną rolę?`,
+        },
+        { role: 'user', content: `Źródła faktów (tylko ta rola):\n${allowedFacts}\n\nTekst do naprawy:\n${assistantText}` },
+      ];
+
+      try {
+        assistantText = await callOpenAI(apiKey, modelRewrite, formatterMessages, 0);
+      } catch (e: any) {
+        const msg = `Błąd połączenia z OpenAI API: ${e?.message || 'fetch failed'}. Spróbuj ponownie.`;
         return NextResponse.json({ assistantText: normalizeForUI(msg, 1) });
       }
-      const audit = buildAudit(effective);
-      return NextResponse.json({ assistantText: normalizeForUI(audit, 1) });
+
+      assistantText = finalize(assistantText);
+
+      needsFix =
+        !rewriteLooksValid(assistantText) ||
+        rewriteVersionsIdentical(assistantText) ||
+        hasUnverifiedNumbers(assistantText, allowedFacts) ||
+        hasBannedCausalPhrases(assistantText);
     }
 
-    // 3) Wytnij blok roli
-    let roleBlockStrict = extractRoleBlock(effective, selectedRoleTitle) || '';
-
-    // fallback jeśli effective jest zbyt ubogie
-    if (!roleBlockStrict && cvEffectiveClean) {
-      roleBlockStrict = extractRoleBlock(cvEffectiveClean, selectedRoleTitle) || '';
-    }
-
-    // ostateczny fallback (żeby nic nie było puste)
-    const roleBlockText = preprocessCvSource(roleBlockStrict || selectedRoleTitle);
-
-    // 4) Zbierz odpowiedzi usera od startu interview
-    const startIdx = findInterviewStartIndex(messages);
-    const answers = collectUserAnswers(messages, startIdx);
-    const userFactsText = preprocessCvSource(answers.join('\n'));
-
-    // 5) Fakty + state
-    const allText = preprocessCvSource(`${roleBlockText}\n${userFactsText}\n${effective}`);
-
-    const facts = extractInterviewFactsFromText(`${roleBlockText}\n${userFactsText}`);
-    const shouldProcess = shouldAskAcquisitionProcess(selectedRoleTitle, allText);
-
-    const state = computeInterviewState(messages, startIdx);
-
-// Last-turn bridge: zatrzymaj pętle (decline) i zalatchuj fakty (answer)
-const lk = inferLastAskedKind(lastAssistantClean);
-const lastUserClean = preprocessCvSource(lastUserRaw || '');
-const lastUserNorm = normalizeAnswerForFacts(lastUserClean);
-
-// 1) Jeśli user odmówił / brak danych -> oznacz decline dla ostatnio zadanego typu
-if (lk && looksLikeDeclineAnswer(lastUserClean)) {
-  state.declinedCounts[lk] = (state.declinedCounts[lk] ?? 0) + 1;
-}
-
-// 2) Jeśli user odpowiedział sensownie -> uznaj, że mamy już fakt i nie pytaj ponownie
-if (lk === 'RESULT' && lastUserNorm && !looksLikeDeclineAnswer(lastUserClean)) {
-  facts.hasResult = true;
-}
-if (lk === 'CONTEXT' && lastUserNorm && !looksLikeDeclineAnswer(lastUserClean)) {
-  facts.hasContext = true;
-  facts.needsContext = false;
-}
-
-    const step = decideNextInterviewStep(shouldProcess, facts, state);
-
-    // 6) ASK kolejnego pytania
-    if (step.kind === 'ASK') {
-      const cant = userCannotShare(lastUserRaw) || userNonAnswer(lastUserRaw);
-
-      let q = step.question;
-      if (step.qk === 'ACTIONS') q = Q1;
-      if (step.qk === 'SCALE') q = buildScaleQuestion(selectedRoleTitle, roleBlockText, cant || (state.declinedCounts.SCALE ?? 0) > 0);
-      if (step.qk === 'PROCESS') q = Q_PROCESS;
-      if (step.qk === 'RESULT') q = buildResultQuestion(selectedRoleTitle, roleBlockText, cant || (state.declinedCounts.RESULT ?? 0) > 0);
-      if (step.qk === 'CONTEXT') {
-        q =
-          (state.declinedCounts.CONTEXT ?? 0) > 0
-            ? Q_CONTEXT_FALLBACK
-            : buildContextQuestion(roleBlockText, userFactsText);
-      }
-
-      const hint =
-        step.qk === 'ACTIONS' || step.qk === 'PROCESS'
-          ? buildHintForQuestion(step.qk, roleBlockText)
-          : '';
-
-      const needIntro =
-        isAudit(lastAssistantClean) ||
-        (extractRoleTitleFromRewrite(lastAssistantClean) && keyify(extractRoleTitleFromRewrite(lastAssistantClean)) !== keyify(selectedRoleTitle));
-
-      const msg = `${needIntro ? `Ok, teraz „${selectedRoleTitle}”.\n` : ''}${q}${hint ? `\n${hint}` : ''}`;
+    if (needsFix) {
+      const msg =
+        `Nie udało się wygenerować stabilnego rewritu w wymaganym formacie (guard fail).\n` +
+        `Wyślij jeszcze raz tę samą wiadomość albo wklej 1–2 konkrety (actions/scale/result), żeby model miał mocniejszy kontekst.`;
       return NextResponse.json({ assistantText: normalizeForUI(msg, 1) });
     }
 
-   /** =========================
- *  7) REWRITE
- *  ========================= */
-
-// 1) Sklej fakty usera + “latched” odpowiedzi (żeby nie pętlić i żeby rewrite je widział)
-const latchedResultClean =
-  latchedResultAnswer === '__UNKNOWN__' ? '' : (latchedResultAnswer || '').trim();
-
-const userFactsTextForPrompt = preprocessCvSource(
-  [
-    userFactsText || '',
-    latchedResultClean ? `Efekt (doprecyzowanie): ${latchedResultClean}` : '',
-    latchedContextAnswer ? `Punkt odniesienia (baseline): ${latchedContextAnswer}` : '',
-  ]
-    .filter(Boolean)
-    .join('\n')
-);
-
-const allowedFacts = preprocessCvSource(`${roleBlockText}\n${userFactsTextForPrompt}`);
-
-// 2) Bezpieczny “allowed facts” do walidacji liczb — już z effective (wlicza latch)
-const allowedFacts = preprocessCvSource(`${roleBlockText}\n${userFactsTextEffective}`);
-
-// 3) prompt do LLM
-const userPrompt = [
-  CONTEXT_PROMPT,
-  '',
-  `ROLE: ${selectedRoleTitle}`,
-  '',
-  `BEFORE (źródło, nie wymyślaj nic):`,
-  roleBlockText,
-  '',
-  `DODATKOWE FAKTY OD USERA (jeśli są):`,
-  userFactsTextForPrompt || '(brak)',
-  '',
-  `Wymagany format WYJŚCIA (bez markdown, bez bloków kodu):`,
-  `=== BEFORE (${selectedRoleTitle}) ===`,
-  `(wklej 1:1 treść BEFORE, max ~12 linii)`,
-  `=== AFTER (${selectedRoleTitle}) ===`,
-  `Wersja A (bezpieczna):`,
-  `- 3–8 bulletów (myślniki)`,
-  `Wersja B (mocniejsza):`,
-  `- 3–8 bulletów (myślniki)`,
-  ``,
-  `Zakazy: nie dodawaj nowych liczb/metryk, nie używaj “dzięki czemu / w efekcie / co pozwoliło…”.`,
-  `Nie mieszaj wersji A i B, nie rób identycznych bulletów.`,
-  `Zakończ dokładnie: "Chcesz poprawić kolejną rolę?"`,
-].join('\n');
-
-let llmOut = '';
-try {
-  llmOut = await callOpenAI(
-    apiKey,
-    modelRewrite,
-    [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: userPrompt },
-    ],
-    0.2
-  );
-} catch {
-  llmOut = '';
-}
-
-let out = stripFencedCodeBlock(llmOut || '').trim();
-out = out
-  .split('\n')
-  .filter((l) => !/^\s*(RESULT|BASELINE\/KONTEXT)\b/i.test(l.trim()))
-  .join('\n')
-  .trim();
-out = out.replace(/(^|\n)\s*-\s*Realizacja:\s*/g, '$1- ');
-
-if (out) {
-  out = stripCvMetaAndFiller(out);
-  out = cleanRewriteArtifacts(out);
-  out = enforceRewriteRoleHeaders(out, selectedRoleTitle);
-  out = fixRewriteVersionHeaderSpacing(out);
-  out = repairRewriteBullets(out);
-  out = enforceDashBulletsStrict(out);
-  out = dedupeBulletsInAB(out);
-  out = enforceDeterministicBeforeSection(out, selectedRoleTitle, roleBlockText);
-  out = ensureRewriteCta(out);
-  out = normalizeForUI(out, 1);
-
-  const invalid =
-    !rewriteLooksValid(out) ||
-    rewriteVersionsIdentical(out) ||
-    !rewriteHasStrictDashBullets(out) ||
-    hasUnverifiedNumbers(out, allowedFacts) ||
-    hasBannedCausalPhrases(out);
-
-  if (!invalid) {
-    return NextResponse.json({ assistantText: out });
+    return NextResponse.json({ assistantText });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'An unexpected error occurred. Please try again.';
+    console.error('Chat API error:', error);
+    return NextResponse.json({ error: `Server error: ${msg}` }, { status: 500 });
   }
 }
 
-// Fallback: deterministyczny rewrite bez halucynacji
-const fallback = buildDeterministicRewriteFallback({
-  roleTitle: selectedRoleTitle,
-  roleBlockText,
-  userFactsText: userFactsTextEffective, // <- ważne: też z latchem
-});
-
-const fallbackOut = normalizeForUI(
-  ensureRewriteCta(enforceDeterministicBeforeSection(fallback, selectedRoleTitle, roleBlockText)),
-  1
-);
-
-return NextResponse.json({ assistantText: fallbackOut });
-      } catch (err: any) {
-    const msg = err?.message ? String(err.message).slice(0, 300) : 'Server error';
-    return NextResponse.json({ error: msg }, { status: 500 });
-  }
-}
