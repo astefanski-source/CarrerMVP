@@ -517,8 +517,8 @@ function inferActiveRoleTitleFromChat(messages: Message[]): string {
     if (m?.role !== 'assistant') continue;
     const s = String(m.content ?? '');
     
-    // POPRAWKA: Obsługa cudzysłowów polskich „” oraz prostych ""
-    const m1 = s.match(/zaczni(?:j|my)\s+od\s+(?:„|")(.+?)(?:”|")/i);
+    // FIX: Poprawiony regex łapie "zacznijmy" (z literą 'm') oraz różne cudzysłowy
+    const m1 = s.match(/zacznij(?:my)?\s+od\s+["„”']([^"„”']+?)["„”']/i);
     if (m1?.[1]) return m1[1].trim();
     
     const m2 = s.match(/===\s*BEFORE\s*\((.+?)\)\s*===/i);
