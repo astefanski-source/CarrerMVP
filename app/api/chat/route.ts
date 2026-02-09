@@ -586,7 +586,7 @@ function startRoleIntro(roleTitle: string): string {
 
 function looksLikeRoleChoicePrompt(text: string): boolean {
   const s = String(text ?? '').toLowerCase();
-  return s.includes('wpisz numer') && s.includes('1–');
+  return s.includes('wybierz 1') && s.includes('2') && s.includes('3');
 }
 
 function parseChoiceIndex(text: string): number | null {
