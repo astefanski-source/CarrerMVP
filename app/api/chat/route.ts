@@ -779,7 +779,8 @@ function buildQuestion(kind: QuestionKind, roleTitle: string, roleText: string):
     default:
       return `Doprecyzuj proszę 1–2 kluczowe szczegóły.`;
   }
-  function buildProxyFollowup(kind: QuestionKind, profile: 'BIZ' | 'TECH' | 'SUPPORT'): string {
+}
+function buildProxyFollowup(kind: QuestionKind, profile: 'BIZ' | 'TECH' | 'SUPPORT'): string {
   const base = `OK — jeśli nie pamiętasz dokładnie, podaj rząd wielkości (widełki) albo proxy.`;
 
   if (kind === 'SCALE') {
@@ -826,7 +827,6 @@ function buildQuestion(kind: QuestionKind, roleTitle: string, roleText: string):
     `Wystarczy trend/proxy: “więcej spotkań”, “wyższy win rate”, “lepszy ROAS/CPA”, “większy MRR” (choćby widełki).`,
     `Jak to szybko sprawdzić: CRM (win rate), Ads Manager/GA4, raporty sprzedaży.`,
   ].join('\n');
-}
 }
 
 /** =========================
