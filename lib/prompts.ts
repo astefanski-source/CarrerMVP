@@ -18,7 +18,7 @@ Możesz dostać wklejoną sekcję Doświadczenie lub tekst wyekstrahowany z PDF 
 ## Wymagany workflow
 ### A) INTAKE
 Po otrzymaniu treści potwierdź to krótko i przejdź bezpośrednio do AUDYTU .
-### B) AUDYT — TOP 3 ROLE (nie TOP 3 problemów)
+### B) AUDYT —3 ROLE (nie 3 problemy)
 Twoim zadaniem jest analiza sekcji "Doświadczenie" i wyselekcjonowanie 3 najważniejszych ról (najbardziej aktualnych lub kluczowych dla profilu zawodowego).
 
 Instrukcja generowania wiadomości:
@@ -83,7 +83,7 @@ Na końcu:
 Twoim zadaniem jest monitorowanie postępu prac nad rolami zidentyfikowanymi w Audycie (Sekcja B).
 ZASADY PRZEJŚCIA:
 1.	Po potwierdzeniu ("Tak", "Chcę", "Dalej"):
-o	Sprawdź, która z ról z TOP 3 nie została jeszcze opracowana.
+o	Sprawdź, która z ról nie została jeszcze opracowana.
 o	Automatycznie wyświetl komunikat: „Świetnie, bierzemy na warsztat kolejną rolę: [Numer]. [Stanowisko] | [Firma].”
 o	Od razu zadaj pierwsze pytanie dotyczące braków tej roli (zgodnie z logiką z Sekcji C). Nie wykonuj ponownie audytu całego CV.
 2.	Po wyczerpaniu listy (Koniec kolejki):
@@ -102,7 +102,7 @@ Poproś o wklejenie Doświadczenia w formacie: "STANOWISKO | DATY | branża/typ 
 •	obowiązek/osiągnięcie 2 
 •	..." 
 Jeśli użytkownik wklei całe CV: "Super — ale na MVP pracujemy tylko na Doświadczeniu. Wklej proszę samą sekcję Doświadczenie".
-Heurystyka wykrywania ról (dla audytu TOP 3)
+Heurystyka wykrywania ról
 Role rozpoznawaj po:
 •	liniach z tytułem stanowiska.
 •	zakresach dat (YYYY–YYYY, MM.YYYY–MM.YYYY, 'obecnie').
@@ -149,7 +149,7 @@ export const SAMPLE_CV_TEXTS: string[] = [
 // Sales (celowo: 1. rola ma jakieś liczby, ale wynik miękki → ma pytać o RESULT/CONTEXT; 2. rola prawie same obowiązki → ma pytać o SCALE/RESULT)
 `Specjalista ds. Sprzedaży B2B - ABC Sp. z o.o., Warszawa | 03.2021 – obecnie
 Pozyskiwanie klientów (outbound + inbound), obsługa leadów, prowadzenie rozmów handlowych, przygotowanie ofert i negocjacje. Praca w CRM (pipeline, follow-upy).
-Regularne spotkania z klientami i praca na lejkach sprzedażowych.
+Ok 30–50 pierwszych kontaktów outbound tygodniowo; regularne spotkania z klientami i praca na lejkach sprzedażowych.
 
 Asystent ds. Sprzedaży - Alfa Beta, Warszawa | 01.2020 – 02.2021
 Wsparcie handlowców w bieżącej sprzedaży: przygotowanie ofert, aktualizacja CRM, kontakt z klientami w sprawie dokumentów i ustaleń.`,
@@ -157,7 +157,8 @@ Wsparcie handlowców w bieżącej sprzedaży: przygotowanie ofert, aktualizacja 
 // Marketing (celowo: są metryki performance, ale brak punktu odniesienia → ma pytać o CONTEXT)
 `Specjalista ds. Marketingu Performance - REKLAMOPOL, zdalnie | 06.2022 – 12.2024
 Prowadzenie kampanii Google Ads i Meta Ads: optymalizacja budżetów, kreacji i landingów, testy A/B, raportowanie wyników.
-Odpowiedzialaność za realizację celów KPI: ROAS, CR, CPC oraz budżetu.
+Miesięczne budżety na poziomie 40–70 tys. zł; równolegle kilkanaście kampanii.
+Wyniki kampanii: ROAS ok. 4.2, CPA ok. 32 zł, CAC ok. 38 zł, CTR ok. 2.3%.
 
 Koordynator Social Media - Media Star | 01.2021 – 05.2022
 Planowanie publikacji, przygotowanie treści i harmonogramów, współpraca z grafikiem, moderacja komentarzy i wiadomości.
