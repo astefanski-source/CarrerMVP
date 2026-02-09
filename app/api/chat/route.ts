@@ -68,6 +68,9 @@ export async function POST(req: NextRequest) {
     // 1. Wykrywamy wybraną rolę (z body lub z historii)
     const currentRoleFromHistory = findCurrentRoleInHistory(messages);
     const selectedRoleTitle = selectedFromBody || currentRoleFromHistory;
+    
+    // 2. Pobieramy fakty już wyciągnięte z rozmowy
+    const facts = extractFactsFromHistory(messages, selectedRoleTitle);
 
     // 3. Sprawdzamy, czy użytkownik chce pominąć pytanie (Nie pamiętam / Nie wiem)
     const lastUserMessage = messages[messages.length - 1].content.toLowerCase();
@@ -300,14 +303,6 @@ function findCurrentRoleInHistory(messages: Message[]): string {
   return '';
 }
 
-function extractFactsFromHistory(messages: Message[], roleTitle: string): Partial<Record<QuestionKind, string>> {
-  // UWAGA: W Twoim kodzie masz też funkcję buildUserFactsFromRoleConversation.
-  // Jeśli to ta sama logika, możesz użyć jednej z nich. 
-  // Na potrzeby kompilacji dodajemy tę definicję:
-  const facts: Partial<Record<QuestionKind, string>> = {};
-  // ... (tutaj Twoja logika wyciągania faktów z tekstu) ...
-  return facts;
-}
 function getRoleProfile(title: string, text: string): 'BIZ' | 'TECH' | 'SUPPORT' {
   const combined = (title + ' ' + text).toLowerCase();
   if (/\b(dev|software|engineer|test|tech|it|cloud|data|analityk|qa|python|java|system)\b/i.test(combined)) return 'TECH';
