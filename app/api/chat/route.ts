@@ -810,7 +810,7 @@ async function callOpenAI(apiKey: string, model: string, messages: { role: 'syst
     body: JSON.stringify({
       model,
       messages,
-      temperature: 0.2,
+      temperature: 0.4,
     }),
   });
   if (!res.ok) {
