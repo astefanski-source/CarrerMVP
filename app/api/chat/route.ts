@@ -270,6 +270,13 @@ function validateRequestBody(raw: any): { ok: true; body: RequestBody } | { ok: 
 /** =========================
  *  Core helpers
  *  ========================= */
+function getRoleProfile(title: string, text: string): 'BIZ' | 'TECH' | 'SUPPORT' {
+  const combined = (title + ' ' + text).toLowerCase();
+  if (/\b(dev|software|engineer|test|tech|it|cloud|data|analityk|qa|python|java|system)\b/i.test(combined)) return 'TECH';
+  if (/\b(obsługa|klient|admin|biur|sekretariat|rezerwacj|wsparcie|support|helpdesk|office|dokument)\b/i.test(combined)) return 'SUPPORT';
+  return 'BIZ'; 
+}
+
 function preprocessCvSource(text: string): string {
   return String(text ?? '')
     .replace(/\r\n/g, '\n')
