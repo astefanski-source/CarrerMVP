@@ -228,14 +228,6 @@ const nextQ = pickNextQuestion({ missing, notes }, { asked: new Set(), declined:
     
     const missing = computeMissing(roleBlockText, userFacts);
 
-    // decyzja: pytanie czy rewrite
-    const nextQ = pickNextQuestion(missing, state);
-
-    if (nextQ) {
-      const q = buildQuestion(nextQ, activeRole.title, roleBlockText);
-      return NextResponse.json({ assistantText: normalizeForUI(startRoleIntro(activeRole.title) + '\n' + q, 1) });
-    }
-
     // 10) REWRITE A/B (LLM + fallback)
     const allowedFacts = preprocessCvSource(`${roleBlockText}\n${factsText}`);
 
