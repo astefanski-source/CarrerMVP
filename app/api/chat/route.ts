@@ -616,40 +616,20 @@ function eqRole(a: string, b: string): boolean {
 function inferLastAskedKind(text: string): QuestionKind | null {
   const t = String(text ?? '').toLowerCase();
 
+  // POPRAWKA: Jeśli tekst to Audyt (wybór roli), to NIE jest to pytanie o metryki.
+  // Blokujemy słowa kluczowe "efekt/skala", które pojawiają się w opisie audytu.
+  if (t.includes('wybierz rolę') || t.includes('1 / 2 / 3') || t.includes('wybierz 1') || t.includes('wpisz numer')) {
+    return null;
+  }
+
   // ACTIONS
-  if (t.includes('co konkretnie ty zrobi') || t.includes('twoje działani') || t.includes('twoje dzialani')) return 'ACTIONS';
-
+  if (t.includes('co konkretnie ty zrobi') || t.includes('twoje działani')) return 'ACTIONS';
+  
   // SCALE
-  if (
-    t.includes('podaj skal') ||
-    t.includes('jaka była skala') ||
-    t.includes('jaka byla skala') ||
-    t.includes('ile tego było') ||
-    t.includes('ile tego bylo') ||
-    t.includes('wolumen') ||
-    t.includes('budżet') ||
-    t.includes('budzet') ||
-    t.includes('#')
-  ) return 'SCALE';
-
+  if (t.includes('skal') || t.includes('ile tego') || t.includes('wolumen') || t.includes('budżet') || t.includes('#')) return 'SCALE';
+  
   // RESULT
-  if (
-    t.includes('jaki był efekt') ||
-    t.includes('jaki byl efekt') ||
-    t.includes('jaki był wynik') ||
-    t.includes('jaki byl wynik') ||
-    t.includes('kpi') ||
-    t.includes('roas') ||
-    t.includes('cpa') ||
-    t.includes('csat') ||
-    t.includes('sla') ||
-    t.includes('win rate')
-  ) return 'RESULT';
-
-  // fallback regex
-  if (/\bco\s+konkretnie\b/i.test(t)) return 'ACTIONS';
-  if (/\b(skala|wolumen|budżet|budzet)\b/i.test(t)) return 'SCALE';
-  if (/\b(efekt|wynik|kpi|roas|cpa|csat|sla)\b/i.test(t)) return 'RESULT';
+  if (t.includes('efekt') || t.includes('wynik') || t.includes('kpi') || t.includes('roas') || t.includes('sla')) return 'RESULT';
 
   return null;
 }
