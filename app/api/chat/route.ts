@@ -719,8 +719,53 @@ function buildUserFactsFromRoleConversation(messages: Message[], roleTitle: stri
 /** =========================
  *  Questions
  *  ========================= */
-function computeMissingKinds(roleBlockText: string, userFacts: Partial<Record<QuestionKind, string>>): QuestionKind[] {
-  return computeMissing(roleBlockText, userFacts).missing;
+function computeMissing(roleBlockText: string, userFacts: Partial<Record<QuestionKind, string>>): { missing: QuestionKind[]; notes: string[] } {
+  const t = preprocessCvSource(roleBlockText).toLowerCase();
+
+  // POPRAWKA: Usuwamy daty z tekstu PRZED sprawdzeniem czy są liczby.
+  // Inaczej rok "2021" jest traktowany jak wynik liczbowy.
+  const textNoDates = t
+    .replace(/\b(19|20)\d{2}\b/g, '')      // usuwa lata 1999, 2023
+    .replace(/\b\d{1,2}\.\d{4}\b/g, '')    // usuwa 01.2021
+    .replace(/\b\d{1,2}\-\d{4}\b/g, '');   // usuwa 01-2021
+
+  // 1. Sprawdź czy są liczby (prosty detektor skali/wyniku) w tekście BEZ DAT
+  const hasNum = /\d/.test(textNoDates);
+
+  // 2. Sygnały Skali
+  const hasScaleSignal = /\b(tydz|tydzień|tygodniowo|mies|miesięcznie|budżet|spend|pipeline|kampani|ofert|spotkan|lead|zgłosz|ticket|faktur|zespół|osób|klientów|wolumen)\b/i.test(t);
+  
+  // 3. Sygnały Wyniku
+  const hasResultSignal =
+    /\b(roas|cac|cpa|ctr|cr|ltv|mrr|arr|przych[oó]d|win rate|konwersj|nps|csat|sla|kpi|roi|marża|błędów|oszczędn|czas|efektywn)\b/i.test(t) ||
+    /\b(wzrost|spadek|poprawa|zwiększ|zmniejsz|skróce|zreduk)\b/i.test(t);
+    
+  // 4. Sygnały Działań (Actions)
+  const strongActionKeywords = /\b(pozyskiwan|prowadzen|wdroż|optymaliz|negocjac|tworzen|analiz|zarz[aą]dz|obsługa|wsparcie|przygotowywan|współpraca|koordynac|rozwój|budowan|sprzedaż|raportowan|testowan|programowan)\b/i.test(t);
+
+  const actionsOk =
+    !!(userFacts.ACTIONS && userFacts.ACTIONS.trim()) ||
+    strongActionKeywords ||
+    t.length > 60; 
+
+  // Skala jest OK tylko jak mamy liczbę (nie datę!) + kontekst skali, LUB fakt od usera
+  const scaleOk = !!(userFacts.SCALE && userFacts.SCALE.trim()) || (hasNum && hasScaleSignal);
+  
+  // Wynik jest OK tylko jak mamy liczbę (nie datę!) + kontekst wyniku, LUB fakt od usera
+  const resultOk = !!(userFacts.RESULT && userFacts.RESULT.trim()) || (hasNum && hasResultSignal);
+
+  const missing: QuestionKind[] = [];
+  const notes: string[] = [];
+
+  if (!resultOk) missing.push('RESULT');
+  if (!scaleOk) missing.push('SCALE');
+  if (!actionsOk) missing.push('ACTIONS');
+
+  if (missing.includes('RESULT')) notes.push('braki: wynik/proxy (efekt pracy)');
+  if (missing.includes('SCALE')) notes.push('braki: skala (liczby/wielkość)');
+  if (missing.includes('ACTIONS')) notes.push('braki: konkrety (co dokładnie robiłeś)');
+
+  return { missing, notes };
 }
 
 function pickNextQuestion(
