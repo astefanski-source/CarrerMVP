@@ -289,15 +289,26 @@ function findCurrentRoleInHistory(messages: Message[]): string {
 
 function getRoleProfile(title: string, text: string): 'BIZ' | 'TECH' | 'SUPPORT' {
   const combined = (title + ' ' + text).toLowerCase();
-  // POPRAWKA: Usunięto końcowe \b, aby łapać słowa z końcówkami (np. "tester" przez "test", "deweloper" przez "dev")
   
-  // 1. TECH (Developer, QA, Tester, Admin systemowy)
-  if (/\b(dev|software|engineer|test|tech|it|cloud|data|analy|qa|python|java|system|programis)/i.test(combined)) return 'TECH';
+  // 1. TECH (Priorytet 1: Programiści, Testerzy, Admini IT)
+  // Słowa: dev, software, engineer, test, data, system, cloud
+  if (/\b(dev|software|engineer|test|tech|it|cloud|data|analy|qa|python|java|system|programis|informatyk)/i.test(combined)) {
+    return 'TECH';
+  }
+
+  // 2. SALES/BIZ (Priorytet 2: Handlowcy, B2B, Managerowie)
+  // Musi być PRZED Supportem, bo handlowiec też "obsługuje klienta", ale ma dostawać pytania o LEAD/BUDŻET.
+  if (/\b(sprzeda|sales|handlow|b2b|account|business|target|revenue|przych|manager|dyrektor|head|kierownik|wzrost|negocjac)/i.test(combined)) {
+    return 'BIZ';
+  }
   
-  // 2. SUPPORT (Obsługa klienta, Admin biurowy, Asystentka)
-  if (/\b(obsługa|klient|admin|biur|sekretariat|rezerwacj|wsparcie|support|helpdesk|office|dokument|asysten)/i.test(combined)) return 'SUPPORT';
+  // 3. SUPPORT (Priorytet 3: Administracja, Obsługa Klienta, Asystentka)
+  // Wyłapuje: obsługa, klient, biuro, dokumenty, asystent
+  if (/\b(obsługa|klient|admin|biur|sekretariat|rezerwacj|wsparcie|support|helpdesk|office|dokument|asysten|recepcj)/i.test(combined)) {
+    return 'SUPPORT';
+  }
   
-  // 3. BIZ (Sprzedaż, Marketing, Management - domyślne)
+  // 4. Fallback -> BIZ (Marketing, HR, inne nietechniczne)
   return 'BIZ';
 }
 
