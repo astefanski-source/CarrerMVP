@@ -193,9 +193,12 @@ export async function POST(req: NextRequest) {
             questionText = "W opisie brakuje Twojej bezpośredniej sprawczości. Co dokładnie należało do Twoich zadań, za które brałeś pełną odpowiedzialność?";
         }
 
-        return NextResponse.json({ 
-            assistantText: normalizeForUI(`Ok, w takim razie zacznijmy od „${activeRole.title}”.\n\n${questionText}`, 1) 
-        });
+        const alreadyStartedThisRole = findRoleStartIndex(messages, activeRole.title) > 0;
+const intro = alreadyStartedThisRole ? '' : `Ok, w takim razie zacznijmy od „${activeRole.title}”.\n\n`;
+
+return NextResponse.json({
+  assistantText: normalizeForUI(`${intro}${questionText}`, 1),
+});
     }
 
     // 3. JEŚLI NIE MA PYTAŃ (nextQ jest null) - PRZECHODZIMY DO REWRITE
