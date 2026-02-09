@@ -897,20 +897,19 @@ function buildDeterministicFallback(roleTitle: string, beforeText: string, facts
       .replace(/^Udział/i, 'Uczestniczyłem w')
       .trim();
 
-  // 1. Przygotuj nowe fakty jako bullety
+  // 1. DEFINICJA baseBullets (To musi być tutaj!)
   const baseBullets = [
     facts.ACTIONS ? `- ${shorten(facts.ACTIONS)}` : '',
     facts.SCALE ? `- Skala: ${shorten(facts.SCALE)}` : '',
     facts.RESULT ? `- Efekt: ${shorten(facts.RESULT)}` : '',
   ].filter(Boolean);
 
-  // 2. Przygotuj stare zdania z BEFORE (usuwamy myślniki z początku)
+  // 2. Pobranie zdań z oryginału
   const fromBefore = lines.slice(2, 6).map((l) => l.replace(/^\-+\s*/, '').trim()).filter(Boolean);
 
-  // POPRAWKA: aBullets teraz ŁĄCZY fakty + oryginalny tekst (zamiast wybierać jedno albo drugie)
+  // 3. Połączenie (Teraz baseBullets jest już zdefiniowane, więc zadziała)
   const aBullets = [...baseBullets, ...fromBefore.map((l) => `- ${l}`)].slice(0, 6);
 
-  // bBullets tworzy się automatycznie na bazie aBullets (dziedziczy te same treści + robi verbify)
   const bBullets = aBullets
     .map((b) => `- ${verbify(b.replace(/^- /, '').trim())}`)
     .map((b) => b.replace(/- skala:/i, '- Skala:').replace(/- efekt:/i, '- Efekt:'))
