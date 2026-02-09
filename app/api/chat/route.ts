@@ -290,25 +290,24 @@ function findCurrentRoleInHistory(messages: Message[]): string {
 function getRoleProfile(title: string, text: string): 'BIZ' | 'TECH' | 'SUPPORT' {
   const combined = (title + ' ' + text).toLowerCase();
   
-  // 1. TECH (Bez zmian - priorytet dla IT)
+  // 1. TECH (Developerzy, Testerzy, Admini IT)
   if (/\b(dev|software|engineer|test|tech|it|cloud|data|analy|qa|python|java|system|programis|informatyk)/i.test(combined)) {
     return 'TECH';
   }
 
-  // 2. SALES/BIZ (Mocne słowa sprzedażowe)
-  // POPRAWKA: Usunięto ogólne słowa "manager", "dyrektor", "kierownik".
-  // Teraz łapie tylko, jeśli jest kontekst handlowy: Sprzedaż, Sales, B2B, Account, Revenue.
+  // 2. SALES/BIZ (Tylko stricte sprzedażowe role)
+  // UWAGA: Usunęliśmy stąd "manager", "dyrektor", "kierownik", żeby PM nie wpadał tutaj.
   if (/\b(sprzeda|sales|handlow|b2b|account|revenue|target|przych|negocjac|prospect|lead|funnel|lejek)/i.test(combined)) {
     return 'BIZ';
   }
   
-  // 3. SUPPORT (Admin, PM, Obsługa)
-  // Asystent PM wpadnie tutaj przez słowa: "wsparcie", "dokument", "asysten".
+  // 3. SUPPORT (Admin, PM, Obsługa Klienta)
+  // Tutaj wpadnie Asystent PM i Koordynator (dostaną pytania o dokumenty/zespół)
   if (/\b(obsługa|klient|admin|biur|sekretariat|rezerwacj|wsparcie|support|helpdesk|office|dokument|asysten|recepcj|koordynac|project|projekt)/i.test(combined)) {
     return 'SUPPORT';
   }
   
-  // 4. Fallback -> BIZ (Management, Marketing, HR - domyślne)
+  // 4. Fallback -> BIZ (Marketing, HR, Management ogólny)
   return 'BIZ';
 }
 
