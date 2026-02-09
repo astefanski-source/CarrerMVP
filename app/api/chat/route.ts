@@ -764,7 +764,8 @@ function buildFirstQuestionForRole(role: RoleItem, fullText: string, messages: M
   const missing = computeMissing(roleBlockText, facts);
   const nextQ = pickNextQuestion(missing, state);
   if (!nextQ) return `Mam już wszystko do rewrite. Lecimy.`;
-  return buildQuestion(nextQ, role.title, roleBlockText);
+  const profile = getRoleProfile(role.title, roleBlockText);
+  return buildQuestion(nextQ, profile);
 }
 
 function buildQuestion(kind: QuestionKind, roleTitle: string, roleText: string): string {
