@@ -541,7 +541,7 @@ function buildAudit(roles: RoleItem[], fullText: string): string {
     lines.push('');
   });
 
-  lines.push(`Nad którą rolą pracujemy najpierw? Wybierz 1 / 2 / 3`);
+  lines.push(`Wybierz rolę: 1 / 2 / 3`);
   return lines.join('\n').trim();
 }
 
