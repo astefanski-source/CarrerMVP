@@ -65,6 +65,27 @@ export async function POST(req: NextRequest) {
         // fallback: weź najdłuższą wiadomość usera (żeby nie łapać „tak/1/nie wiem”)
         (pickBestCvChunkFromMessages(messages) || '')
     );
+    // 1. Wykrywamy wybraną rolę (z body lub z historii)
+    const currentRoleFromHistory = findCurrentRoleInHistory(messages);
+    const selectedRoleTitle = selectedFromBody || currentRoleFromHistory;
+    
+    // 2. Pobieramy fakty już wyciągnięte z rozmowy
+    const facts = extractFactsFromHistory(messages, selectedRoleTitle);
+
+    // 3. Sprawdzamy, czy użytkownik chce pominąć pytanie (Nie pamiętam / Nie wiem)
+    const lastUserMessage = messages[messages.length - 1].content.toLowerCase();
+    const isNegative = /\b(nie pamiętam|nie wiem|nie mam|brak danych|pomiń|nastepne|następne|nie mam danych)\b/i.test(lastUserMessage);
+
+    if (isNegative && selectedRoleTitle) {
+        // Sprawdzamy o co ostatnio pytał asystent, żeby wiedzieć co "zamknąć"
+        const lastAssistantLower = lastAssistant.toLowerCase();
+        
+        if (lastAssistantLower.includes("efekt") || lastAssistantLower.includes("kpi") || lastAssistantLower.includes("wynik")) {
+            facts.RESULT = "BRAK_DANYCH_PIVOT_JAKOSCIOWY";
+        } else if (lastAssistantLower.includes("skal") || lastAssistantLower.includes("ile")) {
+            facts.SCALE = "BRAK_DANYCH_SKALA_OPISOWA";
+        }
+    }
 
     // 0) Jeśli user wkleił nowe doświadczenie, to zawsze startujemy od audytu (nowy batch)
     //    Heurystyka: jeśli last user wygląda jak doświadczenie (ma daty, |, myślnik), a w cvTextEffective go nie ma
