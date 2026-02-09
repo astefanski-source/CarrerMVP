@@ -304,12 +304,33 @@ function getRoleProfile(title: string, text: string): 'BIZ' | 'TECH' | 'SUPPORT'
 }
 
 function preprocessCvSource(text: string): string {
-  return String(text ?? '')
-    .replace(/\r\n/g, '\n')
-    .replace(/\u00A0/g, ' ')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  let t = String(text ?? '');
+
+  // 1. Podstawowe czyszczenie znaków nowej linii i spacji
+  t = t.replace(/\r\n|\r/g, '\n'); 
+  t = t.replace(/\u00A0/g, ' '); // Usuń twarde spacje
+
+  // 2. Normalizacja dat (zamień slash na kropkę), np. 06/2024 -> 06.2024
+  // Jest to kluczowe, bo reszta systemu (Regexy) spodziewa się kropek.
+  t = t.replace(/\b(\d{1,2})\/(\d{4})\b/g, '$1.$2');
+
+  // 3. INTELIGENTNY ENTER (Rozklejanie ról)
+  // Szuka wzorca: koniec zdania (mała litera/cyfra) -> spacja -> DUŻE LITERY (Tytuł) -> myślnik -> Data
+  // Przykład: "...operacyjnej. PROJECT MANAGER - InPost..."
+  // Zamienia to na: "...operacyjnej.\n\nPROJECT MANAGER - InPost..."
+  t = t.replace(
+    /([a-z0-9\.,\)])\s+([A-ZĄĆĘŁŃÓŚŹŻ][A-ZĄĆĘŁŃÓŚŹŻ0-9 \/\.,&\(\)-]{3,}\s+[-–—]\s+.+?(\d{4}|Obecnie|Present))/g,
+    '$1\n\n$2'
+  );
+
+  // 4. Usuwanie dziwnych wcięć i "markdownowych" ozdobników (opcjonalne, ale bezpieczne)
+  t = t.replace(/^[ \t]+/gm, ''); // Usuń spacje z początku linii
+
+  // 5. Finalne formatowanie
+  t = t.replace(/[ \t]+\n/g, '\n'); // Usuń spacje na końcach linii
+  t = t.replace(/\n{3,}/g, '\n\n'); // Max 2 entery z rzędu
+
+  return t.trim();
 }
 
 function normalizeForUI(text: string, _indent = 1): string {
