@@ -690,14 +690,27 @@ function buildQuestion(kind: QuestionKind, profile: 'BIZ' | 'TECH' | 'SUPPORT'):
   switch (kind) {
     case 'ACTIONS':
       return `Co konkretnie Ty zrobiłeś w tej roli? Podaj 2–4 działania (czasowniki + obiekt), bez ogólników.`;
+
     case 'SCALE':
-      if (profile === 'TECH') return `Podaj skalę: np. wielkość bazy danych, #użytkowników, RPS, liczba serwerów.`;
-      if (profile === 'SUPPORT') return `Podaj skalę: np. #zgłoszeń/mies., wielkość zespołu, wolumen dokumentów dziennie.`;
+      if (profile === 'TECH') {
+        return `Podaj skalę: np. wielkość bazy danych, #użytkowników, RPS, liczba serwerów.`;
+      }
+      if (profile === 'SUPPORT') {
+        return `Podaj skalę: np. #zgłoszeń/mies., wielkość zespołu, wolumen dokumentów dziennie.`;
+      }
+      // BIZ
       return `Podaj skalę: np. budżet (widełki), #leadów/mies., #ofert/tydz., #spotkań/mies.`;
+
     case 'RESULT':
-      if (profile === 'TECH') return `Jaki był efekt? Podaj wyniki: np. uptime %, czas wdrożenia, wydajność systemu, brak incydentów.`;
-      if (profile === 'SUPPORT') return `Jaki był efekt? Podaj wyniki: np. SLA, CSAT, czas obsługi (AHT), redukcja błędów.`;
-      return `Jaki był efekt? Podaj wyniki: np. ROAS/CPA, przychód, win rate, realizacja celu %.`;
+      if (profile === 'TECH') {
+        return `Jaki był efekt? Podaj wyniki: np. uptime %, czas wdrożenia, wydajność systemu, brak incydentów.`;
+      }
+      if (profile === 'SUPPORT') {
+        return `Jaki był efekt? Podaj wyniki: np. SLA, CSAT, czas obsługi (AHT), redukcja błędów.`;
+      }
+      // BIZ - usunięto "realizacja celu %"
+      return `Jaki był efekt? Podaj wyniki: np. ROAS/CPA, przychód, win rate, wzrost sprzedaży.`;
+
     default:
       return `Doprecyzuj proszę 1–2 kluczowe szczegóły.`;
   }
