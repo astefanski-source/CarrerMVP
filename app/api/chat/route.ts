@@ -474,51 +474,6 @@ function extractRoleBlock(fullText: string, roleTitle: string): string {
 /** =========================
  *  Audit output
  *  ========================= */
-function computeMissing(roleBlockText: string, userFacts: Partial<Record<QuestionKind, string>>): { missing: QuestionKind[]; notes: string[] } {
-  const t = preprocessCvSource(roleBlockText).toLowerCase();
-  
-  // 1. Sprawdź czy są liczby (prosty detektor skali/wyniku)
-  const hasNum = /\d/.test(t);
-
-  // 2. Sygnały Skali (rozszerzone)
-  const hasScaleSignal = /\b(tydz|tydzień|tygodniowo|mies|miesięcznie|budżet|spend|pipeline|kampani|ofert|spotkan|lead|zgłosz|ticket|faktur|zespół|osób|klientów|wolumen)\b/i.test(t);
-
-  // 3. Sygnały Wyniku (rozszerzone)
-  const hasResultSignal =
-    /\b(roas|cac|cpa|ctr|cr|ltv|mrr|arr|przych[oó]d|win rate|konwersj|nps|csat|sla|kpi|roi|marża|błędów|oszczędn|czas|efektywn)\b/i.test(t) ||
-    /\b(wzrost|spadek|poprawa|zwiększ|zmniejsz|skróce|zreduk)\b/i.test(t);
-
-  // 4. Sygnały Działań (Actions) - ZNACZNIE ROZSZERZONE + WARUNEK DŁUGOŚCI
-  // Jeśli tekst jest w miarę długi (>50 znaków), zakładamy że jakieś działania są.
-  // Szukamy też typowych czasowników/rzeczowników odczasownikowych.
-  const strongActionKeywords = /\b(pozyskiwan|prowadzen|wdroż|optymaliz|negocjac|tworzen|analiz|zarz[aą]dz|obsługa|wsparcie|przygotowywan|współpraca|koordynac|rozwój|budowan|sprzedaż|raportowan|testowan|programowan)\b/i.test(t);
-  
-  const actionsOk = 
-    !!(userFacts.ACTIONS && userFacts.ACTIONS.trim()) || 
-    strongActionKeywords || 
-    t.length > 60; // Heurystyka: jak ktoś napisał 2 zdania, to "coś robił". Nie czepiajmy się.
-
-  const scaleOk = !!(userFacts.SCALE && userFacts.SCALE.trim()) || (hasNum && hasScaleSignal);
-  const resultOk = !!(userFacts.RESULT && userFacts.RESULT.trim()) || (hasNum && hasResultSignal);
-
-  const missing: QuestionKind[] = [];
-  const notes: string[] = [];
-
-  // Logika priorytetów: Prawie zawsze brakuje Wyniku i Skali. Actions rzadziej.
-  if (!resultOk) missing.push('RESULT');
-  if (!scaleOk) missing.push('SCALE');
-  if (!actionsOk) missing.push('ACTIONS'); // Tylko jak tekst jest bardzo krótki/pusty
-
-  // Odwracamy kolejność pushowania do notes, żeby "ACTIONS" (najbardziej podstawowe) było na końcu listy "do zrobienia" jeśli brakuje wszystkiego,
-  // ale w audycie wyświetlamy w kolejności logicznej.
-  // Tutaj notes są tylko do wyświetlania w audycie.
-  
-  if (missing.includes('RESULT')) notes.push('braki: wynik/proxy (efekt pracy)');
-  if (missing.includes('SCALE')) notes.push('braki: skala (liczby/wielkość)');
-  if (missing.includes('ACTIONS')) notes.push('braki: konkrety (co dokładnie robiłeś)');
-
-  return { missing, notes };
-}
 
 function buildAudit(roles: RoleItem[], fullText: string): string {
   const header = [
