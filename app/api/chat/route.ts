@@ -195,12 +195,6 @@ export async function POST(req: NextRequest) {
 
         const alreadyStartedThisRole = findRoleStartIndex(messages, activeRole.title) > 0;
 const intro = alreadyStartedThisRole ? '' : `Ok, w takim razie zacznijmy od „${activeRole.title}”.\n\n`;
-
-return NextResponse.json({
-  assistantText: normalizeForUI(`${intro}${questionText}`, 1),
-});
-    }
-// POPRAWKA FLOW: Sprawdzamy decline dopiero, gdy nie mamy nowych pytań (NextQ is null)
 const lastAskedKind = inferLastAskedKind(lastAssistant);
 const lastUserRaw = String(messages[messages.length - 1]?.content ?? '');
 const userDeclined = looksLikeDeclineAnswer(lastUserRaw);
@@ -209,8 +203,11 @@ if (userDeclined && (lastAskedKind === 'SCALE' || lastAskedKind === 'RESULT')) {
   // Używamy roleBlockText, żeby lepiej określić profil
   const profile = getRoleProfile(activeRole.title, roleBlockText);
   const followup = buildProxyFollowup(lastAskedKind, profile);
-  return NextResponse.json({ assistantText: normalizeForUI(followup, 1) });
-}
+return NextResponse.json({
+  assistantText: normalizeForUI(`${intro}${questionText}`, 1),
+});
+    }
+
     // 3. JEŚLI NIE MA PYTAŃ (nextQ jest null) - PRZECHODZIMY DO REWRITE
     const factsText = preprocessCvSource(
       [
