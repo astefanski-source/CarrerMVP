@@ -291,8 +291,8 @@ function getRoleProfile(title: string, text: string): 'BIZ' | 'TECH' | 'SUPPORT'
   const combined = (title + ' ' + text).toLowerCase();
   
   // 1. TECH (Developerzy, Testerzy, Admini IT)
-  // FIX: Usunięto: system, data, analy, tech, test.
-  // Dodano: tester, sql, linux, baza.
+  // FIX: Usunięto ryzykowne słowa: system, data, analy, tech, test.
+  // Dodano konkrety: tester, sql, linux, baza, kod, azure, aws.
   if (/\b(dev|software|engineer|tester|qa|it|cloud|python|java|programis|informatyk|sql|linux|azure|aws|baza|kod)/i.test(combined)) {
     return 'TECH';
   }
@@ -303,7 +303,7 @@ function getRoleProfile(title: string, text: string): 'BIZ' | 'TECH' | 'SUPPORT'
   }
   
   // 3. SUPPORT (Admin, PM, Obsługa Klienta)
-  // Tutaj wpada "Obsługa Klienta" (przez słowo obsługa/klient)
+  // Tutaj wpada "Obsługa Klienta" (przez słowo obsługa/klient) oraz PM (project/koordynac)
   if (/\b(obsługa|klient|admin|biur|sekretariat|rezerwacj|wsparcie|support|helpdesk|office|dokument|asysten|recepcj|koordynac|project|projekt)/i.test(combined)) {
     return 'SUPPORT';
   }
@@ -321,9 +321,6 @@ function preprocessCvSource(text: string): string {
     .trim();
 }
 
-function normalizeForUI(text: string, _indent = 1): string {
-  return preprocessCvSource(text);
-}
 function normalizeForUI(text: string, _indent = 1): string {
   return preprocessCvSource(text);
 }
