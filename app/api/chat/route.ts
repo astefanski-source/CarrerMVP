@@ -631,15 +631,25 @@ function computeRoleState(messages: Message[], roleTitle: string): { asked: Set<
 }
 
 function findRoleStartIndex(messages: Message[], roleTitle: string): number {
+  const target = roleTitle.trim().toLowerCase();
+  
   for (let i = (messages?.length || 0) - 1; i >= 0; i--) {
     const m = messages[i];
-    // FIX: Zabezpieczenie przed undefined
     if (!m || m.role !== 'assistant') continue;
     
     const s = String(m.content ?? '');
-    const regex = new RegExp(`zaczni(?:j|my)\\s+od\\s+["„”']${escapeRegex(roleTitle)}["„”']`, 'i');
     
-    if (regex.test(s)) return i;
+    // Zamiast szukać konkretnego stringa w Regexie, łapiemy ogólny wzorzec 
+    // "zacznijmy od [COKOLWIEK]" i porównujemy to COKOLWIEK.
+    // To eliminuje problemy z escape'owaniem znaków specjalnych w tytule roli.
+    const match = s.match(/zaczni(?:j|my)\s+od\s+["„”']([^"„”']+?)["„”']/i);
+    
+    if (match && match[1]) {
+       const foundTitle = match[1].trim().toLowerCase();
+       if (foundTitle === target) {
+         return i;
+       }
+    }
   }
   return -1;
 }
