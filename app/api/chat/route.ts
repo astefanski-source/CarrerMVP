@@ -655,12 +655,16 @@ function inferLastAskedKind(text: string): QuestionKind | null {
   return null;
 }
 
-function computeRoleState(messages: Message[], roleTitle: string): { asked: Set<QuestionKind>; declined: Set<QuestionKind> } {
+function computeRoleState(messages: Message[], roleTitle: string): { asked: Set<QuestionKind>; declined: Set<QuestionKind>; askedTotal: number } {
   const asked = new Set<QuestionKind>();
   const declined = new Set<QuestionKind>();
 
   const startIdx = findRoleStartIndex(messages, roleTitle);
   let lastAsked: QuestionKind | null = null;
+
+  // Licznik wszystkich pytań (łącznie) w tej roli
+  // liczymy tylko pytania, które rozpoznajemy jako ACTIONS/SCALE/RESULT
+  let askedTotal = 0;
 
   for (let i = startIdx; i < (messages?.length || 0); i++) {
     const m = messages[i];
@@ -672,6 +676,7 @@ function computeRoleState(messages: Message[], roleTitle: string): { asked: Set<
       if (k) {
         asked.add(k);
         lastAsked = k;
+        askedTotal += 1;
       } else {
         lastAsked = null;
       }
@@ -682,13 +687,13 @@ function computeRoleState(messages: Message[], roleTitle: string): { asked: Set<
         declined.add(lastAsked);
         lastAsked = null;
       } else if (lastAsked) {
-        // odpowiedź jest – nie resetujemy declined, tylko kończymy to pytanie
+        // odpowiedź jest – zamykamy pytanie
         lastAsked = null;
       }
     }
   }
 
-  return { asked, declined };
+  return { asked, declined, askedTotal };
 }
 
 function findRoleStartIndex(messages: Message[], roleTitle: string): number {
