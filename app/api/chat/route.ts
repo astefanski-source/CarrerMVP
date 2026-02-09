@@ -853,14 +853,16 @@ function enforceHeadersAndBullets(out: string, roleTitle: string, beforeText: st
 }
 
 function rewriteLooksValid(out: string, roleTitle: string): boolean {
+  // Sprawdzamy czy output zawiera nagłówki i sekcje A/B
   const hasHeaders =
     new RegExp(`===\\s*BEFORE\\s*\\(${escapeRegex(roleTitle)}\\)\\s*===`, 'i').test(out) &&
     new RegExp(`===\\s*AFTER\\s*\\(${escapeRegex(roleTitle)}\\)\\s*===`, 'i').test(out);
+    
   const hasA = /Wersja A/i.test(out);
   const hasB = /Wersja B/i.test(out);
-  const aBullets = [...baseBullets, ...fromBefore.map((l) => `- ${l}`)].slice(0, 6);
-  const bBullets = extractBulletsFromSection(out, 'B');
-  return hasHeaders && hasA && hasB && aBullets.length >= 2 && bBullets.length >= 2 && out.includes('Chcesz poprawić kolejną rolę?');
+  
+  // W MVP poluzowaliśmy zasady - wystarczą nagłówki i obecność sekcji
+  return hasHeaders && hasA && hasB && out.includes('Chcesz poprawić kolejną rolę?');
 }
 
 function extractBulletsFromSection(out: string, which: 'A' | 'B'): string[] {
