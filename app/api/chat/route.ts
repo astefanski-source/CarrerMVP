@@ -869,24 +869,37 @@ function buildDeterministicFallback(roleTitle: string, beforeText: string, facts
   const beforeHeader = `=== BEFORE (${roleTitle}) ===`;
   const afterHeader = `=== AFTER (${roleTitle}) ===`;
   const lines = preprocessCvSource(beforeText).split('\n').filter(Boolean);
+
   const verbify = (x: string) =>
     x
       .replace(/^Pozyskiwanie/i, 'Pozyskiwałem')
       .replace(/^Prowadzenie/i, 'Prowadziłem')
       .replace(/^Realizowanie/i, 'Realizowałem')
       .replace(/^Wsparcie/i, 'Wspierałem')
+      .replace(/^Obsługa/i, 'Obsługiwałem')
+      .replace(/^Tworzenie/i, 'Tworzyłem')
+      .replace(/^Udział/i, 'Uczestniczyłem w')
       .trim();
+
+  // 1. Przygotuj nowe fakty jako bullety
   const baseBullets = [
     facts.ACTIONS ? `- ${shorten(facts.ACTIONS)}` : '',
     facts.SCALE ? `- Skala: ${shorten(facts.SCALE)}` : '',
     facts.RESULT ? `- Efekt: ${shorten(facts.RESULT)}` : '',
   ].filter(Boolean);
+
+  // 2. Przygotuj stare zdania z BEFORE (usuwamy myślniki z początku)
   const fromBefore = lines.slice(2, 6).map((l) => l.replace(/^\-+\s*/, '').trim()).filter(Boolean);
-  const aBullets = (baseBullets.length ? baseBullets : fromBefore.slice(0, 3).map((l) => `- ${l}`)).slice(0, 6);
+
+  // POPRAWKA: aBullets teraz ŁĄCZY fakty + oryginalny tekst (zamiast wybierać jedno albo drugie)
+  const aBullets = [...baseBullets, ...fromBefore.map((l) => `- ${l}`)].slice(0, 6);
+
+  // bBullets tworzy się automatycznie na bazie aBullets (dziedziczy te same treści + robi verbify)
   const bBullets = aBullets
     .map((b) => `- ${verbify(b.replace(/^- /, '').trim())}`)
     .map((b) => b.replace(/- skala:/i, '- Skala:').replace(/- efekt:/i, '- Efekt:'))
     .slice(0, 6);
+
   return [
     beforeHeader,
     lines.slice(0, 12).join('\n'),
