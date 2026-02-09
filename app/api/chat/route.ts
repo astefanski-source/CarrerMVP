@@ -887,6 +887,8 @@ function hasBadArtifacts(out: string): boolean {
 function buildDeterministicFallback(roleTitle: string, beforeText: string, facts: Partial<Record<QuestionKind, string>>): string {
   const beforeHeader = `=== BEFORE (${roleTitle}) ===`;
   const afterHeader = `=== AFTER (${roleTitle}) ===`;
+  
+  // Zabezpieczenie przed brakiem tekstu + podział na linie
   const lines = preprocessCvSource(beforeText).split('\n').filter(Boolean);
 
   const verbify = (x: string) =>
@@ -900,22 +902,27 @@ function buildDeterministicFallback(roleTitle: string, beforeText: string, facts
       .replace(/^Udział/i, 'Uczestniczyłem w')
       .trim();
 
-  // 1. NAJPIERW: Definicja baseBullets (musi być przed aBullets)
-  const baseBullets = [
+  // 1. NAJPIERW DEFINIUJEMY baseBullets (Rozwiązuje problem "Cannot find name")
+  const baseBullets: string[] = [
     facts.ACTIONS ? `- ${shorten(facts.ACTIONS)}` : '',
     facts.SCALE ? `- Skala: ${shorten(facts.SCALE)}` : '',
     facts.RESULT ? `- Efekt: ${shorten(facts.RESULT)}` : '',
-  ].filter(Boolean);
+  ].filter((item): item is string => Boolean(item));
 
-  // 2. NASTĘPNIE: Definicja fromBefore (musi być przed aBullets)
-  const fromBefore = lines.slice(2, 6).map((l) => l.replace(/^\-+\s*/, '').trim()).filter(Boolean);
+  // 2. NASTĘPNIE DEFINIUJEMY fromBefore
+  // Dodajemy typowanie (l: string), aby uniknąć błędu TS7006
+  const fromBefore: string[] = lines
+    .slice(2, 6)
+    .map((l: string) => l.replace(/^\-+\s*/, '').trim())
+    .filter((item): item is string => Boolean(item));
 
-  // 3. TERAZ: Użycie (TypeScript już nie zgłosi błędu, bo zmienne istnieją)
-  const aBullets = [...baseBullets, ...fromBefore.map((l) => `- ${l}`)].slice(0, 6);
+  // 3. TERAZ BEZPIECZNIE ŁĄCZYMY
+  const aBullets = [...baseBullets, ...fromBefore.map((l: string) => `- ${l}`)].slice(0, 6);
 
+  // 4. GENERUJEMY WERSJĘ B
   const bBullets = aBullets
-    .map((b) => `- ${verbify(b.replace(/^- /, '').trim())}`)
-    .map((b) => b.replace(/- skala:/i, '- Skala:').replace(/- efekt:/i, '- Efekt:'))
+    .map((b: string) => `- ${verbify(b.replace(/^- /, '').trim())}`)
+    .map((b: string) => b.replace(/- skala:/i, '- Skala:').replace(/- efekt:/i, '- Efekt:'))
     .slice(0, 6);
 
   return [
@@ -932,7 +939,7 @@ function buildDeterministicFallback(roleTitle: string, beforeText: string, facts
 }
 
 /** =========================
- * Helpers
+ * Helpers (Tylko jedna definicja na końcu pliku!)
  * ========================= */
 
 function escapeRegex(s: string): string {
