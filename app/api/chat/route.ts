@@ -881,10 +881,6 @@ function hasBadArtifacts(out: string): boolean {
   return s.includes('baseline/kontekst') || s.includes('realizacja:') || s.includes('z ostatniej odpowiedzi usera');
 }
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 /** =========================
  * Deterministic fallback
  * ========================= */
