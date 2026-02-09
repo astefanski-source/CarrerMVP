@@ -904,7 +904,7 @@ function buildDeterministicFallback(roleTitle: string, beforeText: string, facts
       .replace(/^Udział/i, 'Uczestniczyłem w')
       .trim();
 
-  // 1. NAJPIERW DEFINIUJEMY ZMIENNE (baseBullets)
+  // 1. NAJPIERW DEFINIUJEMY baseBullets
   const baseBullets = [
     facts.ACTIONS ? `- ${shorten(facts.ACTIONS)}` : '',
     facts.SCALE ? `- Skala: ${shorten(facts.SCALE)}` : '',
@@ -914,7 +914,7 @@ function buildDeterministicFallback(roleTitle: string, beforeText: string, facts
   // 2. POTEM DEFINIUJEMY fromBefore
   const fromBefore = lines.slice(2, 6).map((l) => l.replace(/^\-+\s*/, '').trim()).filter(Boolean);
 
-  // 3. TERAZ MOŻEMY ICH UŻYĆ w aBullets
+  // 3. TERAZ MOŻEMY ICH UŻYĆ w aBullets (kolejność jest kluczowa!)
   const aBullets = [...baseBullets, ...fromBefore.map((l) => `- ${l}`)].slice(0, 6);
 
   // 4. Budujemy bBullets
