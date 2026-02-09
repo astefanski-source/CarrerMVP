@@ -799,16 +799,18 @@ function rewriteLooksValid(out: string, roleTitle: string): boolean {
 
 function extractBulletsFromSection(out: string, which: 'A' | 'B'): string[] {
   const s = out.split('\n');
-  let in = false;
+  let inSection = false;
   const bullets: string[] = [];
 
   for (const line of s) {
     const l = line.trim();
-    if (/^Wersja A/i.test(l)) in = which === 'A';
-    if (/^Wersja B/i.test(l)) in = which === 'B';
 
-    if (in && l.startsWith('- ')) bullets.push(l);
+    if (/^Wersja A/i.test(l)) inSection = which === 'A';
+    if (/^Wersja B/i.test(l)) inSection = which === 'B';
+
+    if (inSection && l.startsWith('- ')) bullets.push(l);
   }
+
   return bullets;
 }
 
