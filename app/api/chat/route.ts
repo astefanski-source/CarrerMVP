@@ -904,20 +904,19 @@ function buildDeterministicFallback(roleTitle: string, beforeText: string, facts
       .replace(/^Udział/i, 'Uczestniczyłem w')
       .trim();
 
-  // 1. NAJPIERW DEFINIUJEMY baseBullets
+  // 1. NAJPIERW: Definicja baseBullets (musi być przed aBullets)
   const baseBullets = [
     facts.ACTIONS ? `- ${shorten(facts.ACTIONS)}` : '',
     facts.SCALE ? `- Skala: ${shorten(facts.SCALE)}` : '',
     facts.RESULT ? `- Efekt: ${shorten(facts.RESULT)}` : '',
   ].filter(Boolean);
 
-  // 2. POTEM DEFINIUJEMY fromBefore
+  // 2. NASTĘPNIE: Definicja fromBefore (musi być przed aBullets)
   const fromBefore = lines.slice(2, 6).map((l) => l.replace(/^\-+\s*/, '').trim()).filter(Boolean);
 
-  // 3. TERAZ MOŻEMY ICH UŻYĆ w aBullets (kolejność jest kluczowa!)
+  // 3. TERAZ: Użycie (TypeScript już nie zgłosi błędu, bo zmienne istnieją)
   const aBullets = [...baseBullets, ...fromBefore.map((l) => `- ${l}`)].slice(0, 6);
 
-  // 4. Budujemy bBullets
   const bBullets = aBullets
     .map((b) => `- ${verbify(b.replace(/^- /, '').trim())}`)
     .map((b) => b.replace(/- skala:/i, '- Skala:').replace(/- efekt:/i, '- Efekt:'))
