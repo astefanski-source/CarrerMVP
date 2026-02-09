@@ -1,42 +1,3 @@
-Przeanalizowałem Twoje testy. Masz 100% racji – obecne zachowanie nie jest akceptowalne dla MVP.
-
-Zdiagnozowałem **trzy krytyczne błędy**, które odpowiadają za całe to zamieszanie. Problem nie leży w "braku inteligencji" modelu, ale w logice kodu, która blokuje modelowi drogę.
-
-Oto co dokładnie się stało w Twoich testach:
-
-1. **Błąd "Mam już wszystko" (Leak Stanu):**
-* Kiedy przeszedłeś do drugiej roli ("Pracownik Administracyjny"), funkcja sprawdzająca historię pytań (`computeRoleState`) **zaciągnęła historię z poprzedniej roli**.
-* System pomyślał: *"Zadałem już 2 pytania (w poprzedniej roli), a limit to 4, ale widzę w historii, że pytałem o Skalę i Wynik. Więc dla nowej roli (której jeszcze nie zacząłem) też uznaję, że już pytałem"*.
-* Efekt: Pomija pytania i przechodzi do Rewrite bez danych.
-
-
-2. **Błąd "Wersja A/B jest uboga" (Walidator zabija LLM):**
-* Model OpenAI prawdopodobnie wygenerował ładny opis.
-* Ale zadziałał Twój "bezpiecznik" (`hasUnverifiedNumbers`). Sprawdza on, czy liczby w wyniku są w tekście źródłowym.
-* User podał "10 zgłoszeń". Model mógł napisać "ok. 10 zgłoszeń". Walidator mógł uznać, że to niezgodność (zbyt rygorystyczne reguły).
-* Efekt: Kod odrzucił dobrą odpowiedź LLM i wyświetlił **Fallback** (tępą wersję, która tylko dokleja "Skala: 10").
-
-
-3. **Błąd "Admin dostaje pytania o sprzedaż" (Profilowanie):**
-* Funkcja `getRoleProfile` najpierw szukała słów "obsługa" (dla Supportu).
-* "Specjalista ds. Sprzedaży" ma w opisie "obsługa leadów".
-* Efekt: Sprzedawca został uznany za Support.
-
-
-
----
-
-### 🛠️ ROZWIĄZANIE (Wersja 1.9)
-
-Wprowadzam **drastyczne uproszczenia**, żeby MVP po prostu działało płynnie.
-
-1. **Naprawa Startu Roli:** Wymuszam "czystą kartę" przy każdej nowej roli. System nie będzie już pamiętał pytań z poprzedniego stanowiska.
-2. **Wyłączenie Nadgorliwego Walidatora:** Wyłączam funkcję `hasUnverifiedNumbers`. W MVP wolimy, żeby model czasem lekko "popłynął" (co i tak rzadko się zdarza przy temperaturze 0.2), niż żeby odrzucał dobre odpowiedzi i pokazywał brzydki fallback.
-3. **Priorytet dla Sprzedaży:** Dodaję słowa kluczowe `B2B`, `Sales`, `Handlowiec` na samą górę profilowania.
-
-Oto kompletny, naprawiony plik `route.ts`.
-
-```typescript
 import { NextRequest, NextResponse } from 'next/server';
 import { SYSTEM_PROMPT, CONTEXT_PROMPT } from '@/lib/prompts';
 
@@ -940,3 +901,4 @@ function shorten(s?: string): string {
   if (t.length <= 180) return t;
   return t.slice(0, 177).trim() + '…';
 }
+
