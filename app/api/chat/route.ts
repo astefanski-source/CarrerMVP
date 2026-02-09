@@ -179,27 +179,20 @@ export async function POST(req: NextRequest) {
 
     // 9) Przetwarzamy aktywną rolę: pytania -> rewrite
     const activeRole = roles.find((r) => eqRole(r.title, activeRoleTitle)) || roles[0];
-
     const roleBlockText = preprocessCvSource(extractRoleBlock(cvTextEffective, activeRole.title) || activeRole.headerLine);
 
-    // zbuduj state (co już pytaliśmy i jak user odpowiadał) TYLKO w obrębie tej roli
     const state = computeRoleState(messages, activeRole.title);
-
-    // zbuduj "fakty" z roli + z odpowiedzi usera
     const userFacts = buildUserFactsFromRoleConversation(messages, activeRole.title);
-    const factsText = preprocessCvSource(
-      [
-        userFacts.ACTIONS ? `ACTIONS: ${userFacts.ACTIONS}` : '',
-        userFacts.SCALE ? `SCALE: ${userFacts.SCALE}` : '',
-        userFacts.RESULT ? `RESULT: ${userFacts.RESULT}` : '',
-      ]
-        .filter(Boolean)
-        .join('\n')
-    );
-const nextQ = pickNextQuestion({ missing, notes }, { asked: new Set(), declined: new Set() });
+
+    // 1. NAJPIERW OBLICZAMY BRAKI (missing musi być przed nextQ)
+    const { missing, notes } = computeMissing(roleBlockText, userFacts);
+
+    // 2. POTEM DECYDUJEMY O PYTANIU
+    const nextQ = pickNextQuestion({ missing, notes }, state);
 
     if (nextQ) {
-        const profile = getRoleProfile(selectedRoleTitle, selectedRoleText);
+        // Określamy profil na podstawie aktywnej roli
+        const profile = getRoleProfile(activeRole.title, roleBlockText);
         let examples = "";
         let questionText = "";
 
@@ -222,12 +215,20 @@ const nextQ = pickNextQuestion({ missing, notes }, { asked: new Set(), declined:
         }
 
         return NextResponse.json({ 
-            assistantText: normalizeForUI(`Ok, w takim razie zacznijmy od „${selectedRoleTitle}”.\n\n${questionText}`, 1) 
+            assistantText: normalizeForUI(`Ok, w takim razie zacznijmy od „${activeRole.title}”.\n\n${questionText}`, 1) 
         });
     }
-    
-    const missing = computeMissing(roleBlockText, userFacts);
 
+    // 3. JEŚLI NIE MA PYTAŃ (nextQ jest null) - PRZECHODZIMY DO REWRITE
+    const factsText = preprocessCvSource(
+      [
+        userFacts.ACTIONS ? `ACTIONS: ${userFacts.ACTIONS}` : '',
+        userFacts.SCALE ? `SCALE: ${userFacts.SCALE}` : '',
+        userFacts.RESULT ? `RESULT: ${userFacts.RESULT}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
+    );
     // 10) REWRITE A/B (LLM + fallback)
     const allowedFacts = preprocessCvSource(`${roleBlockText}\n${factsText}`);
 
@@ -313,7 +314,6 @@ function extractFactsFromHistory(messages: Message[], roleTitle: string): Partia
   // ... (tutaj Twoja logika wyciągania faktów z tekstu) ...
   return facts;
 }
-
 function getRoleProfile(title: string, text: string): 'BIZ' | 'TECH' | 'SUPPORT' {
   const combined = (title + ' ' + text).toLowerCase();
   if (/\b(dev|software|engineer|test|tech|it|cloud|data|analityk|qa|python|java|system)\b/i.test(combined)) return 'TECH';
