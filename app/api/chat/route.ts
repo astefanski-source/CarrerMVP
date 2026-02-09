@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
     }
 
     const { messages, cvText, selectedRoleTitle: selectedRoleTitleFromBody } = validated.body;
-
+    const selectedFromBody = selectedRoleTitleFromBody ? String(selectedRoleTitleFromBody) : '';
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
@@ -138,10 +138,6 @@ export async function POST(req: NextRequest) {
       // user nie podał poprawnie numeru → pokaż audit jeszcze raz
       return NextResponse.json({ assistantText: normalizeForUI(buildAudit(roles, cvTextEffective), 1) });
     }
-
-    // 3) Jeżeli mamy selectedRoleTitle z body – traktuj to jako aktywną rolę
-    //    (ale w MVP i tak głównie jedziemy po inferencji z rozmowy)
-    const selectedFromBody = selectedRoleTitleFromBody ? String(selectedRoleTitleFromBody) : '';
 
     // 4) Jeśli last assistant jest CTA albo user wkleił nowe CV → AUDIT (żeby utrzymać prosty flow)
     //    (W praktyce: jeśli user wkleił nowe doświadczenie, nie próbujemy zgadywać roli “w locie”)
