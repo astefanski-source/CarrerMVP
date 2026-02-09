@@ -196,7 +196,36 @@ export async function POST(req: NextRequest) {
         .filter(Boolean)
         .join('\n')
     );
+const nextQ = pickNextQuestion({ missing, notes }, { asked: new Set(), declined: new Set() });
 
+    if (nextQ) {
+        const profile = getRoleProfile(selectedRoleTitle, selectedRoleText);
+        let examples = "";
+        let questionText = "";
+
+        if (nextQ === 'RESULT') {
+            if (profile === 'SUPPORT') examples = "np. SLA, czas obsługi (AHT), satysfakcja (CSAT), redukcja błędów";
+            else if (profile === 'TECH') examples = "np. uptime, czas wdrożenia, wydajność systemu, brak incydentów";
+            else examples = "np. ROAS, realizacja celu %, wzrost przychodów, liczba leadów";
+            
+            questionText = `Jaki był efekt Twoich działań? Podaj 1–2 twarde wyniki (${examples}).`;
+        } 
+        else if (nextQ === 'SCALE') {
+            if (profile === 'SUPPORT') examples = "np. #zgłoszeń/mies., wielkość zespołu, wolumen faktur";
+            else if (profile === 'TECH') examples = "np. wielkość bazy danych, #użytkowników, RPS";
+            else examples = "np. budżet miesięczny, #leadów/tydz., wielkość pipeline'u";
+            
+            questionText = `W jakiej skali działałeś? Podaj 1–2 liczby (${examples}).`;
+        }
+        else {
+            questionText = "W opisie brakuje Twojej bezpośredniej sprawczości. Co dokładnie należało do Twoich zadań, za które brałeś pełną odpowiedzialność?";
+        }
+
+        return NextResponse.json({ 
+            assistantText: normalizeForUI(`Ok, w takim razie zacznijmy od „${selectedRoleTitle}”.\n\n${questionText}`, 1) 
+        });
+    }
+    
     const missing = computeMissing(roleBlockText, userFacts);
 
     // decyzja: pytanie czy rewrite
