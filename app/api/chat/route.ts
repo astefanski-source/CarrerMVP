@@ -93,7 +93,8 @@ export async function POST(req: NextRequest) {
     const lastUserLooksLikeCvPaste = looksLikeExperiencePaste(lastUser);
     const doneRoles = extractDoneRoles(messages);
 
-    const roles = dedupeRoles(extractRolesFromCvText(cvTextEffective));
+    const allRoles = dedupeRoles(extractRolesFromCvText(cvTextEffective));
+    const roles = allRoles.slice(0, 3);
 
     if (!cvTextEffective || roles.length === 0) {
       return NextResponse.json({
@@ -548,7 +549,7 @@ function buildAudit(roles: RoleItem[], fullText: string): string {
     lines.push('');
   });
 
-  lines.push(`Wpisz numer: 1–${roles.length}`);
+  lines.push(`Nad którą rolą pracujemy najpierw? Wybierz 1 / 2 / 3`);
   return lines.join('\n').trim();
 }
 
