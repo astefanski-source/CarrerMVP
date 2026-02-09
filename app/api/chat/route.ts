@@ -178,7 +178,7 @@ export async function POST(req: NextRequest) {
         questionText = `Jaki był efekt Twoich działań? Podaj 1–2 twarde wyniki (${examples}).`;
       }
       else if (nextQ === 'SCALE') {
-        if (profile === 'SUPPORT') examples = "np. #zgłoszeń/mies., wielkość zespołu, wolumen faktur";
+        if (profile === 'SUPPORT') examples = "np. #zgłoszeń/mies., wielkość zespołu";
         else if (profile === 'TECH') examples = "np. wielkość bazy danych, #użytkowników, RPS";
         else examples = "np. budżet miesięczny, #leadów/tydz., wielkość pipeline'u";
         questionText = `W jakiej skali działałeś? Podaj 1–2 liczby (${examples}).`;
