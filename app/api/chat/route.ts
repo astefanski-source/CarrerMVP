@@ -289,10 +289,15 @@ function findCurrentRoleInHistory(messages: Message[]): string {
 
 function getRoleProfile(title: string, text: string): 'BIZ' | 'TECH' | 'SUPPORT' {
   const combined = (title + ' ' + text).toLowerCase();
-  // POPRAWKA: Najpierw BIZ/Sprzedaż, żeby nie łapało "obsługa klienta" w B2B jako Support
-  if (/\b(sprzeda|sales|handlow|b2b|account|business|target|revenue|kierownik|dyrektor|manager|wzrost)\b/i.test(combined)) return 'BIZ';
-  if (/\b(dev|software|engineer|test|tech|it|cloud|data|analityk|qa|python|java|system|programista)\b/i.test(combined)) return 'TECH';
-  if (/\b(obsługa|klient|admin|biur|sekretariat|rezerwacj|wsparcie|support|helpdesk|office|dokument|asystent)\b/i.test(combined)) return 'SUPPORT';
+  // POPRAWKA: Usunięto końcowe \b, aby łapać słowa z końcówkami (np. "tester" przez "test", "deweloper" przez "dev")
+  
+  // 1. TECH (Developer, QA, Tester, Admin systemowy)
+  if (/\b(dev|software|engineer|test|tech|it|cloud|data|analy|qa|python|java|system|programis)/i.test(combined)) return 'TECH';
+  
+  // 2. SUPPORT (Obsługa klienta, Admin biurowy, Asystentka)
+  if (/\b(obsługa|klient|admin|biur|sekretariat|rezerwacj|wsparcie|support|helpdesk|office|dokument|asysten)/i.test(combined)) return 'SUPPORT';
+  
+  // 3. BIZ (Sprzedaż, Marketing, Management - domyślne)
   return 'BIZ';
 }
 
