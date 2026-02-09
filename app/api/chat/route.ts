@@ -312,6 +312,18 @@ function getRoleProfile(title: string, text: string): 'BIZ' | 'TECH' | 'SUPPORT'
   return 'BIZ';
 }
 
+function preprocessCvSource(text: string): string {
+  return String(text ?? '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function normalizeForUI(text: string, _indent = 1): string {
+  return preprocessCvSource(text);
+}
 function normalizeForUI(text: string, _indent = 1): string {
   return preprocessCvSource(text);
 }
