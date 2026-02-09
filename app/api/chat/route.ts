@@ -174,7 +174,7 @@ export async function POST(req: NextRequest) {
       if (nextQ === 'RESULT') {
         if (profile === 'SUPPORT') examples = "np. SLA, czas obsługi (AHT), satysfakcja (CSAT), redukcja błędów";
         else if (profile === 'TECH') examples = "np. uptime, czas wdrożenia, wydajność systemu, brak incydentów";
-        else examples = "np. ROAS, realizacja celu %, wzrost przychodów, liczba leadów";
+        else examples = "np. wzrost przychodów, liczba leadów";
         questionText = `Jaki był efekt Twoich działań? Podaj 1–2 twarde wyniki (${examples}).`;
       }
       else if (nextQ === 'SCALE') {
@@ -708,7 +708,7 @@ function buildQuestion(kind: QuestionKind, profile: 'BIZ' | 'TECH' | 'SUPPORT'):
       if (profile === 'SUPPORT') {
         return `Jaki był efekt? Podaj wyniki: np. SLA, CSAT, czas obsługi (AHT), redukcja błędów.`;
       }
-      // BIZ - usunięto "realizacja celu %"
+    
       return `Jaki był efekt? Podaj wyniki: np. ROAS/CPA, przychód, win rate, wzrost sprzedaży.`;
 
     default:
