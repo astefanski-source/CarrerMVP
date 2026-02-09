@@ -768,19 +768,37 @@ function buildFirstQuestionForRole(role: RoleItem, fullText: string, messages: M
   return buildQuestion(nextQ, profile);
 }
 
-function buildQuestion(kind: QuestionKind, roleTitle: string, roleText: string): string {
-  // MVP: krótkie, konkretne pytania bez baseline gate (żeby nie pętlić)
+function buildQuestion(kind: QuestionKind, profile: 'BIZ' | 'TECH' | 'SUPPORT'): string {
+  // MVP: krótkie, konkretne pytania dopasowane do PROFILU ROLI
   switch (kind) {
     case 'ACTIONS':
       return `Co konkretnie Ty zrobiłeś w tej roli? Podaj 2–4 działania (czasowniki + obiekt), bez ogólników.`;
+
     case 'SCALE':
-      return `Podaj skalę (1–2): np. #kampanii / mies., budżet (widełki), #leadów / mies., #ofert / tydz., #spotkań / mies.`;
+      if (profile === 'TECH') {
+        return `Podaj skalę (1–2 liczby): np. wielkość bazy danych, #użytkowników, RPS, liczba serwerów/instancji, wielkość zespołu.`;
+      }
+      if (profile === 'SUPPORT') {
+        return `Podaj skalę (1–2 liczby): np. #zgłoszeń/mies., wielkość zespołu, wolumen dokumentów/faktur dziennie.`;
+      }
+      // Domyślnie BIZ/SALES
+      return `Podaj skalę (1–2 liczby): np. budżet (widełki), #leadów/mies., #ofert/tydz., #spotkań/mies., #kampanii.`;
+
     case 'RESULT':
-      return `Jaki był efekt? Podaj 1–2 KPI/proxy (może być widełki/%/trend). Np. ROAS/CPA/CAC/CTR/CR, przychód/MRR, win rate, SLA/CSAT.`;
+      if (profile === 'TECH') {
+        return `Jaki był efekt? Podaj 1–2 wyniki: np. uptime %, czas wdrożenia, wydajność systemu, brak incydentów (lub widełki).`;
+      }
+      if (profile === 'SUPPORT') {
+        return `Jaki był efekt? Podaj 1–2 wyniki: np. SLA, CSAT, czas obsługi (AHT), redukcja błędów, usunięcie zaległości.`;
+      }
+      // Domyślnie BIZ/SALES
+      return `Jaki był efekt? Podaj 1–2 wyniki: np. ROAS/CPA/CAC, przychód/MRR, win rate, realizacja celu %.`;
+
     default:
       return `Doprecyzuj proszę 1–2 kluczowe szczegóły.`;
   }
 }
+
 function buildProxyFollowup(kind: QuestionKind, profile: 'BIZ' | 'TECH' | 'SUPPORT'): string {
   const base = `OK — jeśli nie pamiętasz dokładnie, podaj rząd wielkości (widełki) albo proxy.`;
 
