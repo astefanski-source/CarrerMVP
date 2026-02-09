@@ -68,9 +68,6 @@ export async function POST(req: NextRequest) {
     // 1. Wykrywamy wybraną rolę (z body lub z historii)
     const currentRoleFromHistory = findCurrentRoleInHistory(messages);
     const selectedRoleTitle = selectedFromBody || currentRoleFromHistory;
-    
-    // 2. Pobieramy fakty już wyciągnięte z rozmowy
-    const facts = extractFactsFromHistory(messages, selectedRoleTitle);
 
     // 3. Sprawdzamy, czy użytkownik chce pominąć pytanie (Nie pamiętam / Nie wiem)
     const lastUserMessage = messages[messages.length - 1].content.toLowerCase();
