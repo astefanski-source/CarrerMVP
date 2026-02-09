@@ -736,6 +736,54 @@ function buildQuestion(kind: QuestionKind, roleTitle: string, roleText: string):
     default:
       return `Doprecyzuj proszę 1–2 kluczowe szczegóły.`;
   }
+  function buildProxyFollowup(kind: QuestionKind, profile: 'BIZ' | 'TECH' | 'SUPPORT'): string {
+  const base = `OK — jeśli nie pamiętasz dokładnie, podaj rząd wielkości (widełki) albo proxy.`;
+
+  if (kind === 'SCALE') {
+    if (profile === 'TECH') {
+      return [
+        base,
+        `Wystarczy: “mało/średnio/dużo” + przykład: #ticketów/tydz., #deploy/msc, #PR/tydz., #użytkowników.`,
+        `Jak to szybko sprawdzić: Jira/GitHub (historia), Grafana/Datadog (ruch), backlog/board.`,
+      ].join('\n');
+    }
+    if (profile === 'SUPPORT') {
+      return [
+        base,
+        `Wystarczy: #zgłoszeń/dzień, #klientów/tydz., czas obsługi (AHT widełki).`,
+        `Jak to szybko sprawdzić: system ticketowy (Zendesk/Freshdesk), raporty SLA, eksport CSV.`,
+      ].join('\n');
+    }
+    // BIZ
+    return [
+      base,
+      `Wystarczy: #leadów/msc, #spotkań/msc, #ofert/tydz., budżet (widełki).`,
+      `Jak to szybko sprawdzić: CRM (pipelines), Ads Manager (wydatki), arkusze sprzedażowe.`,
+    ].join('\n');
+  }
+
+  // RESULT
+  if (profile === 'TECH') {
+    return [
+      base,
+      `Wystarczy trend/proxy: “spadek błędów”, “krótszy czas wdrożeń”, “mniej incydentów”, “lepsza wydajność”.`,
+      `Jak to szybko sprawdzić: incidenty/monitoring, changelog release’ów, post-mortems.`,
+    ].join('\n');
+  }
+  if (profile === 'SUPPORT') {
+    return [
+      base,
+      `Wystarczy trend/proxy: CSAT/NPS (jeśli był), SLA, krótszy czas odpowiedzi, mniej eskalacji.`,
+      `Jak to szybko sprawdzić: raporty SLA/CSAT w helpdesku, logi eskalacji.`,
+    ].join('\n');
+  }
+  // BIZ
+  return [
+    base,
+    `Wystarczy trend/proxy: “więcej spotkań”, “wyższy win rate”, “lepszy ROAS/CPA”, “większy MRR” (choćby widełki).`,
+    `Jak to szybko sprawdzić: CRM (win rate), Ads Manager/GA4, raporty sprzedaży.`,
+  ].join('\n');
+}
 }
 
 /** =========================
