@@ -149,7 +149,7 @@ export const SAMPLE_CV_TEXTS: string[] = [
 // Sales (celowo: 1. rola ma jakieś liczby, ale wynik miękki → ma pytać o RESULT/CONTEXT; 2. rola prawie same obowiązki → ma pytać o SCALE/RESULT)
 `Specjalista ds. Sprzedaży B2B - ABC Sp. z o.o., Warszawa | 03.2021 – obecnie
 Pozyskiwanie klientów (outbound + inbound), obsługa leadów, prowadzenie rozmów handlowych, przygotowanie ofert i negocjacje. Praca w CRM (pipeline, follow-upy).
-Ok 30–50 pierwszych kontaktów outbound tygodniowo; regularne spotkania z klientami i praca na lejkach sprzedażowych.
+Regularne spotkania z klientami i praca na lejkach sprzedażowych.
 
 Asystent ds. Sprzedaży - Alfa Beta, Warszawa | 01.2020 – 02.2021
 Wsparcie handlowców w bieżącej sprzedaży: przygotowanie ofert, aktualizacja CRM, kontakt z klientami w sprawie dokumentów i ustaleń.`,
