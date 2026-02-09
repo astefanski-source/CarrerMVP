@@ -3,8 +3,13 @@ import { SYSTEM_PROMPT, CONTEXT_PROMPT } from '@/lib/prompts';
 
 export const runtime = 'nodejs';
 
+/** =========================
+ *  Types
+ *  ========================= */
+type Role = 'user' | 'assistant';
+
 interface Message {
-  role: 'user' | 'assistant';
+  role: Role;
   content: string;
 }
 
@@ -14,1597 +19,33 @@ interface RequestBody {
   selectedRoleTitle?: string;
 }
 
-type Mode = 'AUDIT_ONLY' | 'NORMAL';
+type QuestionKind = 'ACTIONS' | 'SCALE' | 'RESULT';
 
-/** =========================
- *  Text utils
- *  ========================= */
-function normalizeNewlines(text: string) {
-  return (text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-}
-
-function collapseBlankLines(text: string, maxBlankLines: number) {
-  const max = maxBlankLines + 1;
-  const re = new RegExp(`\\n{${max + 1},}`, 'g');
-  return text.replace(re, '\n'.repeat(max));
-}
-
-function normalizeForUI(text: string, maxBlankLines: number) {
-  const t = normalizeNewlines(text)
-    .split('\n')
-    .map((l) => l.replace(/[ \t]+$/g, ''))
-    .map((l) => (l.trim().length === 0 ? '' : l))
-    .join('\n');
-
-  return collapseBlankLines(t, maxBlankLines).trim();
-}
-
-function stripLeadingIndentAllLines(text: string) {
-  return normalizeNewlines(text)
-    .split('\n')
-    .map((l) => l.replace(/^[ \t]{2,}/g, ''))
-    .join('\n');
-}
-
-function stripFencedCodeBlock(text: string) {
-  const t = normalizeNewlines(text).trim();
-  const m = t.match(/^```(?:\w+)?\n([\s\S]*?)\n```$/);
-  return m ? m[1].trim() : t;
-}
-
-/**
- * NEW: strip simple line-level markdown decorations often present in CV pastes
- * Examples:
- *   *Firma ...*  -> Firma ...
- *   **Title**    -> Title
- */
-function stripMarkdownDecorationsAllLines(text: string) {
-  const lines = normalizeNewlines(text || '').split('\n');
-
-  const stripWrap = (line: string) => {
-    let t = line.trimEnd();
-
-    // remove leading bullets that are only decoration (keep real bullets handled elsewhere)
-    // keep "- " / "• " / "* " bullets
-    // Here we only strip italics/bold wrapping of the entire line.
-    t = t.replace(/^\s*\*{1,3}(.+?)\*{1,3}\s*$/g, '$1');
-    t = t.replace(/^\s*_{1,3}(.+?)_{1,3}\s*$/g, '$1');
-
-    // normalize stray leading markdown markers like "> " from quotes
-    t = t.replace(/^\s*>\s+/g, '');
-
-    return t;
-  };
-
-  return lines.map(stripWrap).join('\n');
-}
-
-/** =========================
- *  NEW: Deglue date tokens + normalize date dashes
- *  - fixes: Role2020–presentbody, obecnieOpis, 2020-2024 etc.
- *  ========================= */
-function deglueDateTokens(text: string) {
-  let t = normalizeNewlines(text || '');
-  if (!t.trim()) return t;
-
-  // Insert space between letters and (MM/YYYY|YYYY)
-  t = t.replace(
-    /([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż])((?:19|20)\d{2}|\b(?:0?[1-9]|1[0-2])[./-](?:19|20)\d{2}\b)/g,
-    '$1 $2'
-  );
-
-  // Insert space between (MM/YYYY|YYYY) and letters
-  t = t.replace(
-    /(\b(?:19|20)\d{2}\b|\b(?:0?[1-9]|1[0-2])[./-](?:19|20)\d{2}\b)(?=[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż])/g,
-    '$1 '
-  );
-
-  // Ensure space before obecnie/present if glued to previous token
-  t = t.replace(
-    /([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż0-9])(?=(obecnie|present)\b)/gi,
-    '$1 '
-  );
-
-  // Ensure space after obecnie/present if glued to following letters (fix presentbody)
-  t = t.replace(
-    /(obecnie|present)(?=[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż])/gi,
-    '$1 '
-  );
-
-  return t;
-}
-
-function normalizeDateDashes(text: string) {
-  let t = normalizeNewlines(text || '');
-  if (!t.trim()) return t;
-
-  // normalize "2020-2024" / "03.2021–obecnie" / "03/2021 - present" into "… – …"
-  // cover both '-' and '–' and '—'
-  t = t.replace(
-    /(\b(?:0?[1-9]|1[0-2])[./-](?:19|20)\d{2}\b|\b(?:19|20)\d{2}\b)\s*[-–—]\s*(\b(?:0?[1-9]|1[0-2])[./-](?:19|20)\d{2}\b|\b(?:19|20)\d{2}\b|\bobecnie\b|\bpresent\b)/gi,
-    (_m, a, b) => `${a} – ${b}`
-  );
-
-  // also handle compact "2020–present" (no spaces)
-  t = t.replace(
-    /(\b(?:0?[1-9]|1[0-2])[./-](?:19|20)\d{2}\b|\b(?:19|20)\d{2}\b)[-–—](\b(?:0?[1-9]|1[0-2])[./-](?:19|20)\d{2}\b|\b(?:19|20)\d{2}\b|\bobecnie\b|\bpresent\b)/gi,
-    (_m, a, b) => `${a} – ${b}`
-  );
-
-  return t;
-}
-
-/** =========================
- *  NEW: Dedupe lines as a separate step
- *  - safe: removes only consecutive duplicates after normalization
- *  ========================= */
-function dedupeConsecutiveLines(text: string) {
-  const lines = normalizeNewlines(text || '').split('\n');
-  const out: string[] = [];
-  let prevKey = '';
-
-  for (const raw of lines) {
-    const line = raw.replace(/[ \t]+$/g, '');
-    const key = line.trim().replace(/\s+/g, ' ').toLowerCase();
-
-    if (!key) {
-      out.push('');
-      prevKey = '';
-      continue;
-    }
-
-    if (key === prevKey) continue;
-    out.push(line);
-    prevKey = key;
-  }
-
-  return out.join('\n');
-}
-
-/** =========================
- *  Date helpers
- *  ========================= */
-function isDateLineLike(line: string) {
-  const t = (line || '').trim();
-  if (!t) return false;
-
-  if (/(\b\d{2}\/\d{4}\b)\s*[–-]\s*(obecnie|present|\b\d{2}\/\d{4}\b)/i.test(t)) return true;
-  if (/(\b\d{2}\.\d{4}\b)\s*[–-]\s*(obecnie|present|\b\d{2}\.\d{4}\b)/i.test(t)) return true;
-  if (/(\b\d{4}\b)\s*[–-]\s*(obecnie|present|\b\d{4}\b)/i.test(t)) return true;
-
-  return false;
-}
-
-function extractDatesFromLine(line: string) {
-  const t = normalizeDateDashes(deglueDateTokens(normalizeNewlines(line || '')));
-
-  const m1 = t.match(/(\d{2}[./\/-]\d{4})\s*[–-]\s*(obecnie|present|\d{2}[./\/-]\d{4})/i);
-  if (m1) return `${m1[1]} – ${m1[2]}`;
-
-  const m2 = t.match(/(\b(?:19|20)\d{2}\b)\s*[–-]\s*(obecnie|present|\b(?:19|20)\d{2}\b)/i);
-  if (m2) return `${m2[1]} – ${m2[2]}`;
-
-  return '';
-}
-
-/** =========================
- *  NEW: Split inline header: "Role - Company 2020 – present body"
- *  Fixes the “capturing-group-count depends on end” bug by using named groups.
- *  ========================= */
-function splitHeaderDatesAndInlineBody(line: string): {
-  headerPart: string;
-  dates: string;
-  inlineBody: string;
-} | null {
-  const t = normalizeDateDashes(deglueDateTokens((line || '').trim()));
-  if (!t) return null;
-
-  // Accept:
-  // - MM/YYYY – (MM/YYYY|YYYY|obecnie|present)
-  // - YYYY – (YYYY|obecnie|present)
-  const re =
-    /^(?<before>.+?)\s+(?<range>(?<start>(?:\d{2}[./-]\d{4}|\b(?:19|20)\d{2}\b))\s*[–-]\s*(?<end>(?:\d{2}[./-]\d{4}|\b(?:19|20)\d{2}\b|obecnie|present)))\s*(?<after>.*)$/i;
-
-  const m = t.match(re);
-  if (!m || !m.groups) return null;
-
-  const headerPart = (m.groups.before || '').trim();
-  const dates = `${m.groups.start} – ${m.groups.end}`.trim();
-  const inlineBody = (m.groups.after || '').trim();
-
-  if (!headerPart || !dates) return null;
-  // avoid false positives: header too short
-  if (headerPart.length < 3) return null;
-
-  return { headerPart, dates, inlineBody };
-}
-
-/** =========================
- *  NEW: handle header with trailing single start date:
- *   "E-COMMERCE ... - Company 06/2024"
- *   and body starts with "Obecnie ..."
- *  ========================= */
-function splitTrailingStartDate(line: string): { headerPart: string; startDate: string } | null {
-  const t = normalizeDateDashes(deglueDateTokens((line || '').trim()));
-  if (!t) return null;
-
-  const m = t.match(/^(?<before>.+?)\s+(?<start>(?:\d{2}[./-]\d{4}|\b(?:19|20)\d{2}\b))\s*$/i);
-  if (!m || !m.groups) return null;
-
-  const headerPart = (m.groups.before || '').trim();
-  const startDate = (m.groups.start || '').trim();
-  if (!headerPart || !startDate) return null;
-
-  return { headerPart, startDate };
-}
-
-/** =========================
- *  NEW: Fix single-paragraph pastes
- *  ========================= */
-function countDateRanges(text: string) {
-  const t = normalizeDateDashes(deglueDateTokens(normalizeNewlines(text || '')));
-  const m =
-    t.match(
-      /(\b\d{2}[./-]\d{4}\b|\b\d{2}\/\d{4}\b|\b(?:19|20)\d{2}\b)\s*[–-]\s*(obecnie|present|\b\d{2}[./-]\d{4}\b|\b\d{2}\/\d{4}\b|\b(?:19|20)\d{2}\b)/gi
-    ) || [];
-  return m.length;
-}
-
-function injectCvLineBreaks(text: string) {
-  let t = normalizeDateDashes(deglueDateTokens(normalizeNewlines(text || '')));
-  const nl = (t.match(/\n/g) || []).length;
-  const dr = countDateRanges(t);
-
-  if (nl >= 4) return t;
-  if (t.trim().length < 120) return t;
-  if (dr === 0) return t;
-
-  t = t.replace(
-    /(\b\d{2}[./-]\d{4}\b|\b\d{2}\/\d{4}\b|\b(?:19|20)\d{2}\b)\s*[–-]\s*(obecnie|present|\b\d{2}[./-]\d{4}\b|\b\d{2}\/\d{4}\b|\b(?:19|20)\d{2}\b)/gi,
-    (_m, a, b) => `\n${a} – ${b}\n`
-  );
-
-  // break before obvious headers (ALLCAPS-ish with dash separator)
-  t = t.replace(/\s+(?=[A-ZĄĆĘŁŃÓŚŹŻ][A-ZĄĆĘŁŃÓŚŹŻ0-9 /&.]{2,}\s(?:\-|–)\s)/g, '\n');
-
-  t = collapseBlankLines(t, 1);
-
-  return t.trim();
-}
-
-/**
- * unwrap hard-wrap (PDF/Word) without breaking headers/bullets
- */
-function unwrapHardWrap(text: string) {
-  const raw = normalizeNewlines(text || '');
-  if (!raw.trim()) return raw;
-
-  const lines = raw.split('\n');
-
-  const isBullet = (l: string) => /^[-•*]\s+/.test(l.trim());
-  const isHeadingLike = (l: string) => {
-    const t = l.trim();
-    if (!t) return false;
-    if (t.startsWith('(')) return false;
-    if (isBullet(t)) return false;
-    if (t.length < 4 || t.length > 160) return false;
-
-    if (/[A-ZĄĆĘŁŃÓŚŹŻ]{3,}/.test(t) && t === t.toUpperCase()) return true;
-    if (/\s[-–]\s/.test(t)) return true;
-    if (/\b(sp\. z o\.o\.|s\.a\.|ltd|inc|gmbh|s\.r\.o\.|kft)\b/i.test(t)) return true;
-
-    return false;
-  };
-
-  const endsSentence = (l: string) => /[.!?…:;)]\s*$/.test(l.trim());
-  const startsLowerOrContinuation = (l: string) => /^[a-ząćęłńóśźż0-9(]/.test(l.trim());
-
-  const out: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const cur = lines[i] ?? '';
-    const next = lines[i + 1] ?? '';
-
-    const curT = cur.trim();
-    const nextT = next.trim();
-
-    if (!curT) {
-      out.push('');
-      continue;
-    }
-
-    if (isBullet(curT) || isHeadingLike(curT) || curT.startsWith('=== ')) {
-      out.push(curT);
-      continue;
-    }
-
-    if (
-      nextT &&
-      !isBullet(nextT) &&
-      !isHeadingLike(nextT) &&
-      !nextT.startsWith('=== ') &&
-      !endsSentence(curT) &&
-      startsLowerOrContinuation(nextT)
-    ) {
-      out.push(`${curT} ${nextT}`.replace(/\s+/g, ' ').trim());
-      i += 1;
-      continue;
-    }
-
-    out.push(curT);
-  }
-
-  return collapseBlankLines(out.join('\n'), 1).trim();
-}
-
-/** =========================
- *  Canonical preprocessing for CV source
- *  ========================= */
-function preprocessCvSource(text: string) {
-  let t = normalizeNewlines(text || '').trim();
-  if (!t) return '';
-
-  t = stripLeadingIndentAllLines(t);
-  t = stripMarkdownDecorationsAllLines(t);
-  t = deglueDateTokens(t);
-  t = normalizeDateDashes(t);
-
-  t = injectCvLineBreaks(t);
-  t = dedupeConsecutiveLines(t);
-  t = collapseBlankLines(t, 1);
-  t = unwrapHardWrap(t);
-
-  // one more pass after unwrap
-  t = deglueDateTokens(t);
-  t = normalizeDateDashes(t);
-  t = dedupeConsecutiveLines(t);
-  t = collapseBlankLines(t, 1);
-
-  return t.trim();
-}
-
-/** =========================
- *  Role parser
- *  ========================= */
-type ParsedRoleBlock = {
-  titleLine: string;
+type RoleItem = {
   title: string;
-  company: string;
-  datesLine: string;
-  bodyLines: string[];
-  raw: string;
+  headerLine: string;
+  startLine: number;
+  endLine: number;
 };
 
-function isBulletLine(line: string) {
-  return /^[-•*]\s+/.test((line || '').trim());
-}
-
-function looksLikeActionSentence(line: string) {
-  const t = (line || '').trim().toLowerCase();
-  if (t.length < 12) return false;
-
-  return /^(prowadzen|zarzadz|koordyn|wdra|optymaliz|analiz|monitor|raport|audyt|tworz|zbudow|standaryz|automatyz|planow|priorytet|manage|led|deliver|own|build|optimi[sz]e|analy[sz]e|report|coordinate|implement)/i.test(
-    t
-  );
-}
-
-function isAllCapsLine(line: string) {
-  const t = (line || '').trim();
-  if (!t) return false;
-  const letters = t.replace(/[^A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]/g, '');
-  if (letters.length < 6) return false;
-  return t === t.toUpperCase();
-}
-
-function hasCompanySuffix(line: string) {
-  return /\b(sp\. z o\.o\.|s\.a\.|ltd|inc|gmbh|s\.r\.o\.|kft)\b/i.test((line || '').trim());
-}
-
-function hasDashSeparator(line: string) {
-  return /\s(\-|–)\s/.test((line || '').trim());
-}
-
-function hasDateInSameLine(line: string) {
-  const t = (line || '').trim();
-  if (!t) return false;
-  return !!extractDatesFromLine(t) || isDateLineLike(t);
-}
-
-function hasJobTitleKeyword(line: string) {
-  const t = (line || '').toLowerCase();
-  // PL + EN (minimal, MVP-safe)
-  return /\b(specjalist|asystent|manager|kierownik|dyrektor|analityk|koordynator|in[żz]ynier|project|account|sales|sprzeda[żz]|e-?commerce|marketplace|owner|lead|consultant|pm\b|po\b)\b/i.test(
-    t
-  );
-}
-
-function looksLikeCompanyLocationLine(line: string) {
-  const t = (line || '').trim();
-  if (!t) return false;
-
-  // very common pattern: "Firma..., Miasto | 03.2021 – obecnie"
-  const hasCityish = /,\s*[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż-]{2,}/.test(t);
-  const hasPipe = /\s\|\s/.test(t);
-  const hasDate = isDateLineLike(t) || !!extractDatesFromLine(t);
-  const startsWithFirma = /^firma\b/i.test(t);
-
-  if (startsWithFirma && hasDate) return true;
-  if (hasCityish && hasPipe && hasDate && !hasJobTitleKeyword(t)) return true;
-
-  return false;
-}
-
-function isTitleCaseish(line: string) {
-  const t = (line || '').trim();
-  if (!t) return false;
-
-  // allow dots (ds.), slashes, hyphens; reject heavy punctuation
-  if (/[(),;:]/.test(t)) return false;
-
-  const words = t.split(/\s+/).filter(Boolean);
-  if (words.length < 2 || words.length > 12) return false;
-
-  const caps = words.filter((w) => /^[A-ZĄĆĘŁŃÓŚŹŻ]/.test(w)).length;
-  return caps / words.length >= 0.5;
-}
-
-/**
- * Header rule (fixed):
- * - never treat company/location line as header
- * - require strong signals:
- *   - date in next line AND (dashSep OR suffix OR ALLCAPS OR titlecase-ish OR jobKeyword)
- *   - OR inline date + dashSep + (suffix OR jobKeyword OR ALLCAPS)
- *   - OR dashSep + suffix
- *   - OR dashSep + jobKeyword
- */
-function looksLikeRoleHeaderLine(line: string, nextLine: string) {
-  const l = (line || '').trim();
-  const n = (nextLine || '').trim();
-
-  if (!l) return false;
-  if (isBulletLine(l)) return false;
-  if (l.startsWith('(')) return false;
-  if (/^[a-ząćęłńóśźż0-9]/.test(l)) return false;
-  if (looksLikeActionSentence(l)) return false;
-  if (looksLikeCompanyLocationLine(l)) return false;
-
-  const dashSep = hasDashSeparator(l);
-  const co = hasCompanySuffix(l);
-  const caps = isAllCapsLine(l);
-  const job = hasJobTitleKeyword(l);
-
-  const dateNext = isDateLineLike(n);
-  const dateInline = hasDateInSameLine(l);
-
-  if (dateNext) {
-    if (l.length < 4 || l.length > 180) return false;
-    return dashSep || co || caps || job || isTitleCaseish(l);
-  }
-
-  // inline date headers: require more than “pipe + date”
-  if (dateInline && dashSep) return co || job || caps;
-  if (dashSep && co) return true;
-  if (dashSep && job) return true;
-
-  // allow headers without explicit dates (ECOM regression): dashSep + (suffix OR job)
-  if (dashSep && (co || job || caps) && l.length <= 180) return true;
-
-  return false;
-}
-
-function splitTitleCompany(titleLine: string) {
-  const t = (titleLine || '').trim();
-
-  // Prefer dash separators
-  const m = t.match(/\s(\-|–)\s/);
-  if (m) {
-    const idx = t.indexOf(m[0]);
-    const left = t.slice(0, idx).trim();
-    const right = t.slice(idx + m[0].length).trim();
-    if (right.length < 2) return { title: t, company: '' };
-    return { title: left, company: right };
-  }
-
-  // Pipe is optional: only if left side looks like a job title
-  const p = t.match(/\s\|\s/);
-  if (p) {
-    const idx = t.indexOf(p[0]);
-    const left = t.slice(0, idx).trim();
-    const right = t.slice(idx + p[0].length).trim();
-    if (hasJobTitleKeyword(left) && right.length >= 2) return { title: left, company: right };
-  }
-
-  return { title: t, company: '' };
-}
-
-function parseExperienceIntoRoleBlocks(input: string): ParsedRoleBlock[] {
-  const text = preprocessCvSource((input || '').trim());
-  if (!text) return [];
-
-  const lines = normalizeNewlines(text).split('\n').map((l) => l.trimEnd());
-
-  const blocks: ParsedRoleBlock[] = [];
-  let i = 0;
-
-  while (i < lines.length) {
-    const lineRaw = (lines[i] || '').trim();
-    const nextRaw = (lines[i + 1] || '').trim();
-
-    // Try inline header split first (Role ... 2020 – present body)
-    const inline = splitHeaderDatesAndInlineBody(lineRaw);
-    if (inline) {
-      const titleLine = inline.headerPart;
-      const datesLine = inline.dates;
-
-      const { title, company } = splitTitleCompany(titleLine);
-
-      const bodyLines: string[] = [];
-      if (inline.inlineBody) bodyLines.push(inline.inlineBody);
-
-      let j = i + 1;
-      while (j < lines.length) {
-        const cur = (lines[j] || '').trim();
-        const nxt = (lines[j + 1] || '').trim();
-        if (looksLikeRoleHeaderLine(cur, nxt)) break;
-        if (cur) bodyLines.push(cur);
-        j++;
-      }
-
-      const raw = [titleLine, datesLine, ...bodyLines].filter(Boolean).join('\n').trim();
-      blocks.push({ titleLine, title, company, datesLine, bodyLines, raw });
-
-      i = j;
-      continue;
-    }
-
-    if (!looksLikeRoleHeaderLine(lineRaw, nextRaw)) {
-      i++;
-      continue;
-    }
-
-    // Normal header
-    let titleLine = lineRaw;
-    let datesLine = '';
-    let startBodyIdx = i + 1;
-
-    // If next line contains date range (even with company/location), attach as datesLine
-    if (isDateLineLike(nextRaw)) {
-      datesLine = nextRaw;
-      startBodyIdx = i + 2;
-    } else {
-      // Handle trailing start date: "… 06/2024" -> "06/2024 – obecnie"
-      const trailing = splitTrailingStartDate(titleLine);
-      if (trailing) {
-        const nextLooksBodyWithObecnie = /^\s*(obecnie|present)\b/i.test(nextRaw);
-        if (nextLooksBodyWithObecnie) {
-          titleLine = trailing.headerPart;
-          datesLine = `${trailing.startDate} – obecnie`;
-        }
-      }
-    }
-
-    const { title, company } = splitTitleCompany(titleLine);
-
-    const bodyLines: string[] = [];
-    let j = startBodyIdx;
-
-    while (j < lines.length) {
-      const cur = (lines[j] || '').trim();
-      const nxt = (lines[j + 1] || '').trim();
-      if (looksLikeRoleHeaderLine(cur, nxt)) break;
-
-      if (cur) bodyLines.push(cur);
-      j++;
-    }
-
-    const raw = [titleLine, datesLine, ...bodyLines].filter(Boolean).join('\n').trim();
-    blocks.push({ titleLine, title, company, datesLine, bodyLines, raw });
-    i = j;
-  }
-
-  return blocks;
-}
-
 /** =========================
- *  Audit detection
- *  ========================= */
-function isAudit(text: string) {
-  return /Już wiem, co poprawić/i.test(text) && /Wpisz numer:/i.test(text);
-}
-function auditHasNumbering(text: string) {
-  return /^\s*\d{1,2}[.)]\s+/m.test(text);
-}
-function countAuditRoles(text: string) {
-  return (text.match(/^\s*\d{1,2}[.)]\s+/gm) || []).length;
-}
-function extractRoleTitleFromAuditByNumber(text: string, num: number) {
-  const re = new RegExp(`^\\s*${num}[.)]\\s+(.+?)\\s+\\|`, 'm');
-  const m = text.match(re);
-  return m?.[1]?.trim() || '';
-}
-function extractAllRoleTitlesFromAudit(text: string) {
-  const out: string[] = [];
-  const re = /^\s*\d{1,2}[.)]\s+(.+?)\s+\|/gm;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const title = (m[1] || '').trim();
-    if (title) out.push(title);
-  }
-  return out;
-}
-function extractChosenNumber(lastUser: string, max = 20): number | null {
-  const m = lastUser.match(/\b(\d{1,2})\b/);
-  if (!m) return null;
-  const n = parseInt(m[1], 10);
-  if (!Number.isFinite(n) || n < 1 || n > max) return null;
-  return n;
-}
-
-/** =========================
- *  Mode detection
- *  ========================= */
-function hasNumberedAuditEver(messages: Message[]) {
-  return messages.some((m) => m.role === 'assistant' && isAudit(m.content) && auditHasNumbering(m.content));
-}
-
-function looksLikeExperiencePaste(text: string) {
-  const t = preprocessCvSource(text || '');
-  if (!t) return false;
-
-  const lines = t.split('\n').map((l) => l.trim()).filter(Boolean);
-  const dateRanges = countDateRanges(t);
-  const hasDatesLine = lines.some((l) => isDateLineLike(l)) || dateRanges >= 1;
-
-  const hasBullets = lines.some((l) => /^[-•*]\s+/.test(l));
-  const hasHeaderish = lines.some((l, idx) => {
-    const next = lines[idx + 1] || '';
-    return looksLikeRoleHeaderLine(l, next) || hasCompanySuffix(l);
-  });
-
-  const hasDash = /\s(\-|–)\s/.test(t);
-  const flatButStructured = lines.length <= 3 && hasDatesLine && (hasDash || hasHeaderish);
-
-  return (hasHeaderish && hasDatesLine && (hasBullets || lines.length >= 3)) || flatButStructured;
-}
-
-function detectMode(messages: Message[], cvTextEffective?: string): Mode {
-  if (hasNumberedAuditEver(messages)) return 'NORMAL';
-
-  const userCount = messages.filter((m) => m.role === 'user').length;
-  const lastUser = messages.slice().reverse().find((m) => m.role === 'user')?.content || '';
-
-  const looksLikeExp = !!(cvTextEffective && cvTextEffective.trim()) || looksLikeExperiencePaste(lastUser);
-
-  if (userCount === 1 && looksLikeExp) return 'AUDIT_ONLY';
-  return 'NORMAL';
-}
-
-/** =========================
- *  Roles extraction
- *  ========================= */
-type Role = { title: string; dates: string };
-
-function stripDiacritics(s: string) {
-  return (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-}
-function keyify(s: string) {
-  return stripDiacritics(s)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '');
-}
-function roleKey(title: string, dates: string) {
-  const norm = (s: string) =>
-    stripDiacritics(s)
-      .toLowerCase()
-      .replace(/\s+/g, ' ')
-      .trim()
-      .replace(/[^a-z0-9]+/g, '');
-  return `${norm(title)}|${norm(dates || '')}`;
-}
-function dedupeRoles(roles: Role[]) {
-  const seen = new Set<string>();
-  const out: Role[] = [];
-  for (const r of roles || []) {
-    const title = (r?.title || '').trim();
-    const dates = (r?.dates || '').trim() || 'daty do uzupełnienia';
-    if (!title) continue;
-    const k = roleKey(title, dates);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push({ title, dates });
-  }
-  return out;
-}
-
-function extractRolesFromCvText(cvText: string): Role[] {
-  const t = preprocessCvSource(cvText || '');
-  if (!t) return [];
-
-  const blocks = parseExperienceIntoRoleBlocks(t);
-  if (!blocks.length) return [];
-
-  const roles = blocks.map((b) => {
-    const dates =
-      extractDatesFromLine(b.datesLine) ||
-      extractDatesFromLine(b.titleLine) ||
-      b.datesLine.trim() ||
-      'daty do uzupełnienia';
-
-    return {
-      title: b.titleLine.trim(),
-      dates,
-    };
-  });
-
-  return dedupeRoles(roles).slice(0, 8);
-}
-
-/** =========================
- *  CV source builder (base + later multi-role pastes) + dedupe
- *  ========================= */
-function looksLikeMultiRoleExperiencePasteStrong(text: string) {
-  const t = preprocessCvSource(text || '');
-  if (!t) return false;
-  if (t.length < 120) return false;
-  return looksLikeExperiencePaste(t) && countDateRanges(t) >= 2;
-}
-
-function buildCvTextEffective(cvText: string | undefined, messages: Message[]) {
-  const base = preprocessCvSource((cvText || '').trim());
-
-  const pastes = messages
-    .filter((m) => m.role === 'user')
-    .map((m) => m.content)
-    .filter(looksLikeMultiRoleExperiencePasteStrong)
-    .map((t) => preprocessCvSource(t));
-
-  const parts = [base, ...pastes].filter(Boolean);
-  if (!parts.length) return '';
-
-  const uniq: string[] = [];
-  const seen = new Set<string>();
-  for (const p of parts) {
-    const key = preprocessCvSource(p).replace(/\s+/g, ' ').trim().toLowerCase();
-    if (!key) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    uniq.push(preprocessCvSource(p));
-  }
-
-  return preprocessCvSource(uniq.join('\n\n')).trim();
-}
-
-/** =========================
- *  Missing analysis helpers
- *  - IMPORTANT: ignore dates so they don’t look like “scale/result numbers”
- *  ========================= */
-function stripDateNoise(text: string) {
-  let t = normalizeDateDashes(deglueDateTokens(normalizeNewlines(text || '')));
-
-  // remove common CV date formats
-  t = t.replace(/\b\d{2}[./-]\d{4}\b/gi, ' ');
-  t = t.replace(/\b(?:19|20)\d{2}\b/gi, ' ');
-
-  // remove date ranges explicitly
-  t = t.replace(
-    /(\b\d{2}[./-]\d{4}\b|\b(?:19|20)\d{2}\b)\s*[–-]\s*(\b\d{2}[./-]\d{4}\b|\b(?:19|20)\d{2}\b|\bobecnie\b|\bpresent\b)/gi,
-    ' '
-  );
-
-  return t.replace(/\s+/g, ' ').trim();
-}
-
-function hasAnyNumber(text: string) {
-  const t = stripDateNoise(text || '');
-  return /(\d+(?:[.,]\d+)?)/.test(t);
-}
-
-function hasActionsSignal(text: string) {
-  const raw = preprocessCvSource(text || '');
-  const t = stripDateNoise(raw).toLowerCase();
-
-  const verb = /(zarządza|zarzadz|prowadzi|koordyn|wdra|optymaliz|analiz|monitor|negocj|sprzeda|pozysk|raport|audyt|tworz|zbudow|ustaw|konfigur|standaryz|automatyz|planow|priorytet|manage|led|deliver|own|build|optimi[sz]e|analy[sz]e|report|coordinate|implement)/i.test(
-    t
-  );
-
-  const bullets = raw.split('\n').filter((l) => /^[-•*]\s+/.test(l.trim())).length >= 2;
-  return verb || bullets;
-}
-
-function hasScaleSignal(text: string) {
-  const raw = stripDateNoise(text || '');
-  if (!hasAnyNumber(raw)) return false;
-
-  if (/(\d[\d .,_]*)(?:\s*)([$€£¥]|[A-Z]{3}\b)/.test(raw)) return true;
-  if (/(\d[\d .,_]*)(?:\s*)(zł|zl|pln|eur|euro|usd|\$|dolar\w*)/i.test(raw)) return true;
-  if (/(\d+(?:[.,]\d+)?)\s*(k|m|b|tys|mln|mld|milion\w*|%)/i.test(raw) || /%/.test(raw)) return true;
-  if (/(?<![\d.,])(\d{1,4})(?![.,]\d)\s+[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]{3,}/.test(raw)) return true;
-
-  const m = raw.match(/(\d+(?:[.,]\d+)?)/);
-  if (m) {
-    const n = parseFloat((m[1] || '0').replace(',', '.'));
-    if (!Number.isNaN(n) && n >= 10) return true;
-  }
-  return false;
-}
-
-function hasBaselineContextSignal(text: string) {
-  const t = stripDateNoise(text || '').toLowerCase();
-  return /(yoy|mom|qoq|vs\.?|wzrost|spadek|z\s+\d|do\s+\d|baseline|benchmark|poprzedn|wcześniej|uprzednio)/i.test(t);
-}
-
-function hasAcquisitionProcessSignal(text: string) {
-  const raw0 = normalizeNewlines(text || '');
-  const raw = stripDateNoise(raw0);
-  const t = raw.toLowerCase();
-
-  const hasNumberedSteps = /(^|\n)\s*\d[.)]\s+/.test(raw0);
-  const hasProcessWords = /(proces|etap|krok|od kontaktu|do finalizacji|ścieżk|lejka|pipeline)/i.test(t);
-
-  const hasChannelish = /(inbound|outbound|lead|leady|www|formularz|zapytan|polecen|linkedin|mail|email|telefon|cold call|coldcall|prospect)/i.test(
-    t
-  );
-
-  const stageHits =
-    [
-      /(kontakt|pierwsz)/i,
-      /(kwalifikac|potrzeb|brief)/i,
-      /(ofert|wycen)/i,
-      /(negocj|uzgodn|deal)/i,
-      /(umow|podpis|finaliz|zamów|zamow|onboarding|hiring)/i,
-    ].reduce((acc, re) => acc + (re.test(t) ? 1 : 0), 0) >= 2;
-
-  return hasNumberedSteps || hasProcessWords || (hasChannelish && stageHits);
-}
-
-function hasResultSignal(text: string) {
-  const raw0 = preprocessCvSource(text || '');
-  const raw = stripDateNoise(raw0);
-  if (!raw) return false;
-
-  const t = raw.toLowerCase();
-
-  const outcomeWords =
-    /(wzrost|spadek|oszczęd|oszczed|redukc|utrzym|roas|acos|roi|konwersj|conversion|cvr\b|cr\b|ctr\b|cpc\b|cpa\b|ltv\b|aov\b|cac\b|mrr|arr|przych|revenue|sprzeda|marż|margin|terminow|bez\s+(zakł|opóźn|problem|błęd|bled)|stabiln|reklamac|incydent)/i.test(
-      t
-    );
-
-  const qualitative = /(terminow|stabiln|bez\s+(zakł|opóźn|problem|błęd|bled)|mniej\s+eskalac)/i.test(t);
-
-  return (hasAnyNumber(raw) && outcomeWords) || (!hasAnyNumber(raw) && qualitative);
-}
-
-function shouldAskAcquisitionProcess(roleTitle: string, allText: string) {
-  const t = `${roleTitle}\n${allText}`.toLowerCase();
-
-  const strong =
-    /(lead|leady|pipeline|prospect|inbound|outbound|cold call|coldcall|bd\b|business development|account(?!ing)|kandydat|rekrut|recruit|hiring|partner|deal|negocj|umow)/i.test(
-      t
-    );
-
-  const salesOnly = /\bsprzeda\w*\b/i.test(t);
-  const salesPlus = salesOnly && /(lead|pipeline|prospect|inbound|outbound|account|bd|deal|pozyskiw|pozyskanie|negocj|umow)/i.test(t);
-
-  return strong || salesPlus;
-}
-
-type RoleMissing = {
-  missingActions: boolean;
-  missingScale: boolean;
-  missingResult: boolean;
-  missingProcess: boolean;
-  missingContext: boolean;
-  summary: string;
-};
-
-function analyzeRoleMissing(roleTitle: string, roleBlock: string, allCvText: string) {
-  const block = preprocessCvSource(roleBlock || '');
-  const all = `${block}\n${allCvText || ''}`.trim();
-
-  const shouldProcess = shouldAskAcquisitionProcess(roleTitle, all);
-
-  const hasActions = hasActionsSignal(block);
-  const hasScale = hasScaleSignal(block);
-  const hasResult = hasResultSignal(block);
-  const hasProcess = hasAcquisitionProcessSignal(block);
-
-  const missingActions = !hasActions;
-  const missingScale = !hasScale;
-  const missingResult = !hasResult;
-  const missingProcess = shouldProcess && !hasProcess;
-
-  // context is “nice-to-have”, but ONLY when there is real non-date number
-  const missingContext = hasAnyNumber(block) && !hasBaselineContextSignal(block);
-
-  const missingParts: string[] = [];
-  if (missingResult) missingParts.push('wynik/proxy (metryka)');
-  if (missingScale) missingParts.push('skala (1 liczba/widełki)');
-  if (missingActions) missingParts.push('konkret działań (2–3)');
-  if (missingProcess) missingParts.push('proces (2–4 etapy)');
-  if (!missingResult && !missingScale && !missingActions && missingContext) missingParts.push('kontekst wyniku (baseline/zmiana)');
-
-  const summary =
-    missingParts.length === 0
-      ? 'nic krytycznego — można od razu zrobić mocny rewrite'
-      : missingParts.join(', ');
-
-  return { missingActions, missingScale, missingResult, missingProcess, missingContext, summary } as RoleMissing;
-}
-
-/** =========================
- *  Role block extraction
- *  ========================= */
-function extractRoleBlock(cvText: string, titleLine: string) {
-  const t = preprocessCvSource(cvText || '');
-  if (!t.trim() || !titleLine.trim()) return '';
-
-  const blocks = parseExperienceIntoRoleBlocks(t);
-  if (!blocks.length) return '';
-
-  const want = keyify(titleLine);
-
-  const exact = blocks.find((b) => keyify(b.titleLine) === want);
-  if (exact) return exact.raw;
-
-  const partial = blocks.filter((b) => {
-    const k = keyify(b.titleLine);
-    return k.includes(want) || want.includes(k);
-  });
-  if (partial.length === 1) return partial[0].raw;
-
-  const wantTitleOnly = keyify(splitTitleCompany(titleLine).title);
-  const byTitle = blocks.filter((b) => keyify(b.title) === wantTitleOnly);
-  if (byTitle.length === 1) return byTitle[0].raw;
-
-  return '';
-}
-
-/** =========================
- *  Audit builder (improved)
- *  ========================= */
-function buildAudit(cvText: string) {
-  const roles = dedupeRoles(extractRolesFromCvText(cvText));
-  if (roles.length === 0) {
-    return `Na MVP pracujemy tylko na sekcji Doświadczenie.\nWklej Doświadczenie (stanowiska + daty + opis).`;
-  }
-
-  const lines: string[] = [];
-  lines.push('Cel: zamieniamy “obowiązki” na IMPACT.');
-  lines.push('W CV liczy się: co zrobiłeś (actions) • w jakiej skali (scale) • jaki efekt (result) • jakim sposobem (process/narzędzia).');
-  lines.push('');
-  lines.push('Już wiem, co poprawić. Wybierz rolę do dopracowania:');
-  lines.push('');
-
-  roles.forEach((r, idx) => {
-    const block = extractRoleBlock(cvText, r.title);
-    const miss = analyzeRoleMissing(r.title, block || '', cvText || '');
-    lines.push(`${idx + 1}. ${r.title} | ${r.dates}`);
-    lines.push(`braki: ${miss.summary}`);
-    lines.push('');
-  });
-
-  while (lines.length && lines[lines.length - 1] === '') lines.pop();
-  lines.push('');
-
-  const n = roles.length;
-  lines.push(n === 1 ? 'Wpisz numer: 1' : `Wpisz numer: 1–${Math.min(n, 8)}`);
-
-  return lines.join('\n');
-}
-
-/** =========================
- *  Conversation helpers
- *  ========================= */
-function isRewrite(text: string) {
-  return /===\s*BEFORE/i.test(text) || /===\s*AFTER/i.test(text);
-}
-function extractRoleTitleFromRewrite(text: string) {
-  const t = normalizeNewlines(text);
-  const m = t.match(/===\s*BEFORE\s*\((.+?)\)\s*===/i);
-  return m?.[1]?.trim() || '';
-}
-function extractRoleTitleFromStartAssistant(text: string) {
-  const t = normalizeNewlines(text);
-  let m = t.match(/zaczni(?:j|ń)my od „(.+?)”/i);
-  if (m?.[1]) return m[1].trim();
-  m = t.match(/lecimy dalej\s*—\s*teraz „(.+?)”/i);
-  if (m?.[1]) return m[1].trim();
-  m = t.match(/teraz „(.+?)”/i);
-  if (m?.[1]) return m[1].trim();
-  return '';
-}
-function findLastRoleTitleInConversation(messages: Message[]) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role !== 'assistant') continue;
-
-    const fromStart = extractRoleTitleFromStartAssistant(m.content);
-    if (fromStart) return fromStart;
-
-    const fromRewrite = extractRoleTitleFromRewrite(m.content);
-    if (fromRewrite) return fromRewrite;
-  }
-  return '';
-}
-function getProcessedRoleKeys(messages: Message[]) {
-  const s = new Set<string>();
-  for (const m of messages) {
-    if (m.role !== 'assistant') continue;
-    if (!isRewrite(m.content)) continue;
-    const title = extractRoleTitleFromRewrite(m.content);
-    if (!title) continue;
-    s.add(keyify(title));
-  }
-  return s;
-}
-function findNextUnprocessedRoleTitle(roles: Role[], processedKeys: Set<string>) {
-  for (const r of roles) {
-    const k = keyify(r.title);
-    if (!processedKeys.has(k)) return r.title;
-  }
-  return '';
-}
-
-function userWantsContinueAfterRewrite(text: string) {
-  const t = (text || '').trim().toLowerCase();
-  if (!t) return false;
-  if (/(stop|koniec|nie|nie dzięki|nie dzieki|wystarczy)/i.test(t)) return false;
-  if (looksLikeMultiRoleExperiencePasteStrong(text)) return false;
-  if (/\b(\d{1,2})\b/.test(t)) return false;
-  return t.length <= 40;
-}
-
-/** =========================
- *  Interview logic (fixed loops + better kind inference)
- *  ========================= */
-function isJustNumberChoice(text: string) {
-  return /^\s*\d{1,2}\s*$/.test((text || '').trim());
-}
-
-function userCannotShare(text: string) {
-  const t = (text || '').toLowerCase();
-  return /(nie mogę|nie moge|nie mogę podać|nie moge podac|poufne|confidential|nie mogę dzielić|nie moge dzielic)/i.test(t);
-}
-
-function userNonAnswer(text: string) {
-  const t = (text || '').trim().toLowerCase();
-  if (!t) return true;
-
-  const nonAnswers = new Set([
-    'nie pamiętam',
-    'nie pamietam',
-    'nie wiem',
-    'brak',
-    'brak danych',
-    'n/a',
-    'na',
-    '—',
-    '-',
-    '?',
-    '???',
-  ]);
-
-  return nonAnswers.has(t) || t.length <= 3;
-}
-
-function findInterviewStartIndex(messages: Message[]) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role !== 'assistant') continue;
-    if (isAudit(m.content)) return i;
-    if (/zaczni(?:j|ń)my od/i.test(m.content)) return i;
-    if (/lecimy dalej\s*—\s*teraz/i.test(m.content)) return i;
-    if (/teraz „/i.test(m.content)) return i;
-  }
-  return 0;
-}
-
-function collectUserAnswers(messages: Message[], startIdx: number) {
-  return messages
-    .slice(startIdx)
-    .filter((m) => m.role === 'user')
-    .map((m) => m.content)
-    .filter((u) => !looksLikeMultiRoleExperiencePasteStrong(u))
-    .filter((u) => !isJustNumberChoice(u));
-}
-
-type InterviewFacts = {
-  hasActions: boolean;
-  hasScale: boolean;
-  hasProcess: boolean;
-  hasResult: boolean;
-};
-
-function extractInterviewFactsFromText(text: string): InterviewFacts {
-  const joined = preprocessCvSource(text || '');
-  const stripped = stripDateNoise(joined);
-  return {
-    hasActions: hasActionsSignal(stripped),
-    hasScale: hasScaleSignal(stripped),
-    hasProcess: hasAcquisitionProcessSignal(stripped),
-    hasResult: hasResultSignal(stripped),
-  };
-}
-
-type QuestionKind = 'ACTIONS' | 'SCALE' | 'PROCESS' | 'RESULT';
-
-const Q1 = 'Co konkretnie TY zrobiłeś w tej roli? Podaj 2–3 działania, bez "my".';
-const Q2 = 'Jaka była skala? Podaj 1 liczbę albo widełki (np. liczba projektów/spraw, liczebność zespołu, budżet, wolumen).';
-const Q2_SAFE =
-  'Jeśli nie możesz podać kwot/wrażliwych danych — podaj bezpieczny proxy (widełki): np. liczba projektów/spraw, liczba osób w zespole, liczba interesariuszy, liczba zgłoszeń/tydz., liczba dostaw/tydz.';
-const Q_PROCESS =
-  'Jeśli w tej roli był proces pozyskania (klientów/kandydatów/partnerów) — opisz 2–4 etapy od pierwszego kontaktu do finalizacji.';
-const Q_RESULT =
-  'Jaki był wynik Twoich działań? Chodzi o konkretną miarę efektu (metryka albo sensowne proxy): np. % wzrostu/spadku, oszczędności, terminowość, spadek błędów/zakłóceń.';
-const Q_RESULT_SAFE =
-  'Jeśli nie możesz podać twardych wyników/kwot — podaj bezpieczny proxy: np. terminowość, spadek liczby błędów/incydentów, skrócenie czasu realizacji, mniej eskalacji, poprawa jakości/CX.';
-
-function inferQuestionKindFromAssistant(text: string): QuestionKind | null {
-  const t = normalizeNewlines(text || '').toLowerCase();
-
-  if (t.includes('co konkretnie') && t.includes('2–3') && t.includes('dział')) return 'ACTIONS';
-  if (t.includes('jaka była skala') || t.includes('widełk') || t.includes('wolumen') || t.includes('liczba osób')) return 'SCALE';
-  if (t.includes('proces pozyskania') || (t.includes('2–4') && t.includes('etap') && t.includes('finaliz'))) return 'PROCESS';
-
-  // RESULT: detect both normal and SAFE variants
-  if (t.includes('jaki był wynik') || t.includes('wynik twoich działań') || t.includes('bezpieczny proxy') || t.includes('metryk')) {
-    return 'RESULT';
-  }
-
-  return null;
-}
-
-type InterviewState = {
-  askedCounts: Record<QuestionKind, number>;
-  declinedCounts: Record<QuestionKind, number>;
-  askedTotal: number;
-};
-
-function computeInterviewState(messages: Message[], startIdx: number): InterviewState {
-  const askedCounts: Record<QuestionKind, number> = { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0 };
-  const declinedCounts: Record<QuestionKind, number> = { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0 };
-
-  let currentKind: QuestionKind | null = null;
-
-  for (let i = startIdx; i < messages.length; i++) {
-    const m = messages[i];
-
-    if (m.role === 'assistant') {
-      const k = inferQuestionKindFromAssistant(m.content);
-      if (k) {
-        currentKind = k;
-        askedCounts[k] += 1;
-      }
-      continue;
-    }
-
-    if (!currentKind) continue;
-    const u = (m.content || '').trim();
-
-    if (isJustNumberChoice(u)) continue;
-    if (looksLikeMultiRoleExperiencePasteStrong(u)) continue;
-
-    if (userCannotShare(u) || userNonAnswer(u)) {
-      declinedCounts[currentKind] += 1;
-      currentKind = null;
-      continue;
-    }
-
-    currentKind = null;
-  }
-
-  const askedTotal = Object.values(askedCounts).reduce((a, b) => a + b, 0);
-  return { askedCounts, declinedCounts, askedTotal };
-}
-
-function decideNextInterviewStep(
-  shouldAskProcess: boolean,
-  facts: InterviewFacts,
-  state: InterviewState
-) {
-  const maxQuestions = 6;
-
-  if (state.askedTotal >= maxQuestions) return { kind: 'REWRITE' as const };
-
-  const declined = (k: QuestionKind) => state.declinedCounts[k] >= 1 || state.askedCounts[k] >= 2;
-
-  if (!facts.hasActions && !declined('ACTIONS')) return { kind: 'ASK' as const, question: Q1, qk: 'ACTIONS' as const };
-  if (!facts.hasScale && !declined('SCALE')) return { kind: 'ASK' as const, question: Q2, qk: 'SCALE' as const };
-  if (shouldAskProcess && !facts.hasProcess && !declined('PROCESS'))
-    return { kind: 'ASK' as const, question: Q_PROCESS, qk: 'PROCESS' as const };
-  if (!facts.hasResult && !declined('RESULT')) return { kind: 'ASK' as const, question: Q_RESULT, qk: 'RESULT' as const };
-
-  return { kind: 'REWRITE' as const };
-}
-
-/** =========================
- *  NEW: deterministic hints based on role text (no model)
- *  ========================= */
-function buildHintForQuestion(kind: QuestionKind, roleText: string) {
-  const t = preprocessCvSource(roleText || '').toLowerCase();
-
-  const hints: string[] = [];
-
-  if (kind === 'SCALE') {
-    if (/(zesp[oó]ł|team)/i.test(t)) hints.push('liczba osób w zespole');
-    if (/(bud[żz]et|budget|cost)/i.test(t)) hints.push('budżet / widełki');
-    if (/(projekt|project)/i.test(t)) hints.push('liczba projektów');
-    if (/(stakeholder|interesariusz)/i.test(t)) hints.push('liczba interesariuszy');
-    if (/(zgłosze|incydent|ticket|case)/i.test(t)) hints.push('liczba zgłoszeń/incydentów (np. /tydz.)');
-    if (/(shopify|allegro|amazon|marketplace|listing|sku|ofert)/i.test(t)) hints.push('wolumen: liczba listingów/ofert/SKU');
-  }
-
-  if (kind === 'RESULT') {
-    if (/(oszcz[ęe]d|savings|redukc)/i.test(t)) hints.push('oszczędności / redukcja kosztów');
-    if (/(terminow|delay|op[oó][źz]n|sla)/i.test(t)) hints.push('terminowość / SLA / mniej opóźnień');
-    if (/(b[łl][ęe]d|incydent|reklamac|error|issue)/i.test(t)) hints.push('mniej błędów/incydentów/reklamacji');
-    if (/(shopify|ga4|ctr|cr\b|cvr\b|aov\b|ltv\b|cac\b|roas|acos)/i.test(t))
-      hints.push('metryki e-commerce: CR/CTR/AOV/LTV/CAC/ROAS (jeśli masz)');
-  }
-
-  if (kind === 'PROCESS') {
-    if (/(cold call|coldcall|linkedin|lead|www|formularz|outbound|inbound)/i.test(t))
-      hints.push('kanały: cold call / inbound z www / LinkedIn + 2–4 etapy');
-  }
-
-  if (!hints.length) return '';
-  return `Podpowiedź (na bazie opisu): ${hints.join(', ')}.`;
-}
-
-/** =========================
- *  Rewrite guard utils (plus bullet dedupe)
- *  ========================= */
-function extractNumbersLoose(text: string) {
-  const t = normalizeNewlines(text);
-  const re = /(?<!\w)(\d{1,3}(?:[ .,_]\d{3})*(?:[.,]\d+)?|\d+)(?!\w)/g;
-  return (t.match(re) || []).map((x) => x.replace(/[ _]/g, '').trim());
-}
-function expandNumberVariants(tokens: string[]) {
-  const out = new Set<string>();
-  for (const tok of tokens) {
-    out.add(tok);
-    out.add(tok.replace(/,/g, '.'));
-    out.add(tok.replace(/\./g, ','));
-  }
-  return out;
-}
-function hasUnverifiedNumbers(rewriteText: string, allowedFacts: string) {
-  const allowedRaw = extractNumbersLoose(allowedFacts);
-  const allowed = expandNumberVariants(allowedRaw);
-
-  const gotRaw = extractNumbersLoose(rewriteText);
-  const suspicious = gotRaw.filter((n) => !allowed.has(n) && !allowed.has(n.replace(/,/g, '.')) && !allowed.has(n.replace(/\./g, ',')));
-  return suspicious.length > 0;
-}
-function hasBannedCausalPhrases(text: string) {
-  const t = normalizeNewlines(text).toLowerCase();
-  const banned = [
-    'co przyczyni',
-    'co skutkow',
-    'co pozwoliło',
-    'co pozwolilo',
-    'co umożliwiło',
-    'co umozliwilo',
-    'dzięki czemu',
-    'w efekcie',
-    'co przynios',
-    'przełożyło się',
-    'przelozylo sie',
-    'przekładając się',
-    'przekladajac sie',
-  ];
-  return banned.some((p) => t.includes(p));
-}
-
-function enforceRewriteRoleHeaders(text: string, roleTitle: string) {
-  let t = normalizeNewlines(text);
-  if (!roleTitle.trim()) return t;
-
-  t = t.replace(/===\s*BEFORE\s*\((.*?)\)\s*===/i, `=== BEFORE (${roleTitle}) ===`);
-  t = t.replace(/===\s*AFTER\s*\((.*?)\)\s*===/i, `=== AFTER (${roleTitle}) ===`);
-  return t;
-}
-
-function stripCvMetaAndFiller(text: string) {
-  let t = normalizeNewlines(text);
-
-  const killMetaBullets = [
-    /^\s*-?\s*Doprecyzuj.*$/gim,
-    /^\s*-?\s*Dodaj.*$/gim,
-  ];
-  for (const re of killMetaBullets) t = t.replace(re, '');
-
-  const killPhrases = [
-    /zgodnie z opisem w before\.?/gi,
-    /z twoich danych:?/gi,
-    /jeśli dotyczy\.?/gi,
-    /skala\s*:\s*/gi,
-  ];
-  for (const re of killPhrases) t = t.replace(re, '');
-
-  return t;
-}
-
-function repairRewriteBullets(text: string) {
-  const lines = normalizeNewlines(text).split('\n');
-  const out: string[] = [];
-  let mode: 'NONE' | 'A' | 'B' = 'NONE';
-
-  const pushOrAppend = (line: string) => {
-    const t = line.trim();
-    if (!t) return;
-
-    const last = out[out.length - 1] || '';
-    const isBullet = t.startsWith('- ');
-    const lastIsBullet = last.trim().startsWith('- ');
-
-    if (isBullet) {
-      out.push(`- ${t.replace(/^-+\s*/g, '')}`.trimEnd());
-      return;
-    }
-
-    if (mode !== 'NONE' && lastIsBullet) {
-      out[out.length - 1] = `${last.trimEnd()} ${t}`.replace(/\s+/g, ' ').trimEnd();
-      return;
-    }
-
-    if (mode !== 'NONE') {
-      out.push(`- ${t}`.trimEnd());
-      return;
-    }
-
-    out.push(t);
-  };
-
-  for (const raw of lines) {
-    const t = raw.trimEnd();
-    const tt = t.trim();
-
-    if (/^Wersja A \(bezpieczna\):/i.test(tt)) {
-      mode = 'A';
-      out.push('Wersja A (bezpieczna):');
-      continue;
-    }
-    if (/^Wersja B \(mocniejsza\):/i.test(tt)) {
-      mode = 'B';
-      out.push('Wersja B (mocniejsza):');
-      continue;
-    }
-    if (/^===\s*(BEFORE|AFTER)/i.test(tt)) {
-      mode = 'NONE';
-      out.push(tt);
-      continue;
-    }
-    if (/^Chcesz poprawić kolejną rolę\?/i.test(tt)) {
-      mode = 'NONE';
-      out.push('Chcesz poprawić kolejną rolę?');
-      continue;
-    }
-
-    if (mode === 'A' || mode === 'B') pushOrAppend(t);
-    else out.push(t);
-  }
-
-  return out.join('\n');
-}
-
-function enforceDashBulletsStrict(text: string) {
-  const lines = normalizeNewlines(text).split('\n');
-  const out: string[] = [];
-  let mode: 'NONE' | 'A' | 'B' = 'NONE';
-
-  for (const raw of lines) {
-    const l = raw.trimEnd();
-    const t = l.trim();
-
-    if (/^Wersja A \(bezpieczna\):/i.test(t)) {
-      mode = 'A';
-      out.push('Wersja A (bezpieczna):');
-      continue;
-    }
-    if (/^Wersja B \(mocniejsza\):/i.test(t)) {
-      mode = 'B';
-      out.push('Wersja B (mocniejsza):');
-      continue;
-    }
-    if (/^===\s*(BEFORE|AFTER)/i.test(t)) {
-      mode = 'NONE';
-      out.push(t);
-      continue;
-    }
-    if (/^Chcesz poprawić kolejną rolę\?/i.test(t)) {
-      mode = 'NONE';
-      out.push('Chcesz poprawić kolejną rolę?');
-      continue;
-    }
-
-    if (mode === 'A' || mode === 'B') {
-      if (!t) continue;
-      if (/^(doprecyzuj|dodaj)\b/i.test(t)) continue;
-      out.push(`- ${t.replace(/^-+\s*/g, '')}`);
-      continue;
-    }
-
-    out.push(l);
-  }
-
-  return out.join('\n');
-}
-
-function dedupeBulletsInAB(text: string) {
-  const lines = normalizeNewlines(text).split('\n');
-  const out: string[] = [];
-
-  let mode: 'NONE' | 'A' | 'B' = 'NONE';
-  const seenA = new Set<string>();
-  const seenB = new Set<string>();
-
-  const normBullet = (s: string) =>
-    s.replace(/^\s*-\s*/g, '').trim().replace(/\s+/g, ' ').toLowerCase();
-
-  for (const raw of lines) {
-    const t = raw.trimEnd();
-    const tt = t.trim();
-
-    if (/^Wersja A \(bezpieczna\):/i.test(tt)) {
-      mode = 'A';
-      out.push('Wersja A (bezpieczna):');
-      continue;
-    }
-    if (/^Wersja B \(mocniejsza\):/i.test(tt)) {
-      mode = 'B';
-      out.push('Wersja B (mocniejsza):');
-      continue;
-    }
-    if (/^===\s*(BEFORE|AFTER)/i.test(tt)) {
-      mode = 'NONE';
-      out.push(tt);
-      continue;
-    }
-    if (/^Chcesz poprawić kolejną rolę\?/i.test(tt)) {
-      mode = 'NONE';
-      out.push('Chcesz poprawić kolejną rolę?');
-      continue;
-    }
-
-    if ((mode === 'A' || mode === 'B') && tt.startsWith('- ')) {
-      const k = normBullet(tt);
-      const seen = mode === 'A' ? seenA : seenB;
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(tt);
-      continue;
-    }
-
-    out.push(t);
-  }
-
-  return out.join('\n');
-}
-
-function ensureRewriteCta(text: string) {
-  let t = normalizeNewlines(text).trim();
-  t = t.replace(/\s*Chcesz poprawić kolejną rolę\?\s*/gi, '\n');
-  t = dedupeConsecutiveLines(t);
-  t = t.trim();
-  return `${t}\nChcesz poprawić kolejną rolę?`.trim();
-}
-
-function rewriteLooksValid(text: string) {
-  const hasBefore = /===\s*BEFORE/i.test(text);
-  const hasAfter = /===\s*AFTER/i.test(text);
-  const hasA = /Wersja A \(bezpieczna\):/i.test(text);
-  const hasB = /Wersja B \(mocniejsza\):/i.test(text);
-
-  const sectionA = text.match(/Wersja A \(bezpieczna\):[\s\S]*?(?=Wersja B \(mocniejsza\):)/i)?.[0] || '';
-  const sectionB = text.match(/Wersja B \(mocniejsza\):[\s\S]*/i)?.[0] || '';
-
-  const bulletsA = (sectionA.match(/^\s*-\s+/gm) || []).length;
-  const bulletsB = (sectionB.match(/^\s*-\s+/gm) || []).length;
-
-  return hasBefore && hasAfter && hasA && hasB && bulletsA >= 3 && bulletsB >= 3;
-}
-
-function rewriteVersionsIdentical(text: string) {
-  const a = text.match(/Wersja A \(bezpieczna\):([\s\S]*?)(?=Wersja B \(mocniejsza\):)/i)?.[1] || '';
-  const b = text.match(/Wersja B \(mocniejsza\):([\s\S]*?)(?=Chcesz poprawić|$)/i)?.[1] || '';
-  const norm = (s: string) =>
-    normalizeNewlines(s)
-      .split('\n')
-      .map((l) => l.replace(/^\s*-\s*/g, '').trim())
-      .filter(Boolean)
-      .join(' | ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .toLowerCase();
-
-  const na = norm(a);
-  const nb = norm(b);
-  return na && nb && na === nb;
-}
-
-/** =========================
- *  OpenAI call (better error + timeout)
- *  ========================= */
-async function callOpenAI(
-  apiKey: string,
-  model: string,
-  messages: Array<{ role: string; content: string }>,
-  temperature: number
-) {
-  const controller = new AbortController();
-  const timeoutMs = 20000;
-  const id = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({ model, messages, temperature }),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text().catch(() => '');
-      let msg = 'OpenAI API error';
-      try {
-        const parsed = JSON.parse(errText || '{}');
-        msg = parsed?.error?.message || msg;
-      } catch {
-        if (errText) msg = errText.slice(0, 300);
-      }
-      throw new Error(msg);
-    }
-
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content || '';
-  } catch (err: any) {
-    const code = err?.cause?.code || err?.code || '';
-    const aborted = err?.name === 'AbortError';
-    if (aborted) throw new Error('OpenAI fetch failed (timeout)');
-    throw new Error(`OpenAI fetch failed${code ? ` (${code})` : ''}`);
-  } finally {
-    clearTimeout(id);
-  }
-}
-
-/** =========================
- *  Role title resolution from UI (simple fuzzy)
- *  ========================= */
-function resolveSelectedRoleTitle(selected: string, rolesFromCv: Role[]) {
-  const s = (selected || '').trim();
-  if (!s) return '';
-  const sk = keyify(s);
-  if (!sk) return '';
-
-  const hits = rolesFromCv
-    .map((r) => r.title)
-    .filter((t) => {
-      const tk = keyify(t);
-      return tk.includes(sk) || sk.includes(tk);
-    });
-
-  if (hits.length === 1) return hits[0];
-  if (hits.length > 1) {
-    hits.sort((a, b) => Math.abs(a.length - s.length) - Math.abs(b.length - s.length));
-    return hits[0];
-  }
-  return s;
-}
-
-/** =========================
- *  POST handler
+ *  POST
  *  ========================= */
 export async function POST(req: NextRequest) {
   try {
-    const body: RequestBody = await req.json();
-    const { messages, cvText, selectedRoleTitle } = body;
-
-    if (!messages || !Array.isArray(messages)) {
-      return NextResponse.json({ error: 'Messages array is required' }, { status: 400 });
+    let rawJson: any;
+    try {
+      rawJson = await req.json();
+    } catch {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
+
+    const validated = validateRequestBody(rawJson);
+    if (!validated.ok) {
+      return NextResponse.json({ error: validated.error }, { status: validated.status });
+    }
+
+    const { messages, cvText, selectedRoleTitle: selectedRoleTitleFromBody } = validated.body;
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
@@ -1614,280 +55,847 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-    const modelRewrite = process.env.OPENAI_MODEL_REWRITE || model;
+    const modelRewrite = process.env.OPENAI_MODEL_REWRITE || process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
-    const cvTextEffective = buildCvTextEffective(cvText, messages);
-    const mode = detectMode(messages, cvTextEffective);
+    const lastUser = lastText(messages, 'user');
+    const lastAssistant = lastText(messages, 'assistant');
 
-    // === AUDIT_ONLY ===
-    if (mode === 'AUDIT_ONLY') {
-      const firstUser = preprocessCvSource(messages.find((m) => m.role === 'user')?.content || '');
-      const effective = cvTextEffective || firstUser;
-
-      const roles = dedupeRoles(extractRolesFromCvText(effective));
-
-      if (roles.length === 1) {
-        const roleTitle = roles[0].title;
-        const roleBlock = extractRoleBlock(effective, roleTitle) || effective;
-        const allText = `${roleBlock}\n${effective}`;
-
-        const factsFromRole = extractInterviewFactsFromText(roleBlock);
-        const shouldProcess = shouldAskAcquisitionProcess(roleTitle, allText);
-        const state: InterviewState = {
-          askedCounts: { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0 },
-          declinedCounts: { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0 },
-          askedTotal: 0,
-        };
-
-        const step = decideNextInterviewStep(shouldProcess, factsFromRole, state);
-        const q = step.kind === 'ASK' ? step.question : Q_RESULT;
-
-        const hint = step.kind === 'ASK' ? buildHintForQuestion(step.qk, roleBlock) : '';
-        const msg = `Ok, w takim razie zacznijmy od „${roleTitle}”. ${q}${hint ? `\n${hint}` : ''}`;
-        return NextResponse.json({ assistantText: normalizeForUI(msg, 1) });
-      }
-
-      const audit = buildAudit(effective);
-      return NextResponse.json({ assistantText: normalizeForUI(audit, 1) });
-    }
-
-    // === NORMAL ===
-    const lastUser = preprocessCvSource(messages.slice().reverse().find((m) => m.role === 'user')?.content || '');
-    const lastAssistant = messages.slice().reverse().find((m) => m.role === 'assistant')?.content || '';
-
-    const assistantWasAudit = isAudit(lastAssistant) && auditHasNumbering(lastAssistant);
-    const rolesInAudit = assistantWasAudit ? countAuditRoles(lastAssistant) : 0;
-
-    const chosenNum = assistantWasAudit ? extractChosenNumber(lastUser, 20) : null;
-
-    let chosenRoleTitle = '';
-    if (assistantWasAudit && chosenNum === null) {
-      const titles = extractAllRoleTitlesFromAudit(lastAssistant);
-      const uKey = keyify(lastUser);
-      const hit = titles.find((t) => (uKey && keyify(t).includes(uKey)) || uKey.includes(keyify(t)));
-      if (hit) chosenRoleTitle = hit;
-    }
-    if (assistantWasAudit && chosenNum !== null) {
-      chosenRoleTitle = extractRoleTitleFromAuditByNumber(lastAssistant, chosenNum);
-    }
-
-    if (assistantWasAudit && !chosenRoleTitle) {
-      const msg = rolesInAudit > 0 ? `Wybierz numer roli: 1–${rolesInAudit}` : 'Wybierz numer roli z listy.';
-      return NextResponse.json({ assistantText: normalizeForUI(msg, 1) });
-    }
-
-    const assistantWasRewrite = isRewrite(lastAssistant);
-    const continueNextRole = assistantWasRewrite && userWantsContinueAfterRewrite(lastUser);
-
-    const rolesFromCv = dedupeRoles(extractRolesFromCvText(cvTextEffective || ''));
-
-    const processedKeys = getProcessedRoleKeys(messages);
-    const nextRoleTitle = continueNextRole ? findNextUnprocessedRoleTitle(rolesFromCv, processedKeys) : '';
-    const hasNextRole = continueNextRole && !!nextRoleTitle;
-
-    if (continueNextRole && !hasNextRole) {
-      const msg =
-        rolesFromCv.length === 0
-          ? 'Ok. Wklej proszę sekcję „Doświadczenie” (stanowiska + opisy).'
-          : 'Ok. Przerobiliśmy już wszystkie role, które wkleiłeś. Wklej kolejne stanowisko, a lecimy dalej.';
-      return NextResponse.json({ assistantText: normalizeForUI(msg, 1) });
-    }
-
-    const roleFromClientResolved = resolveSelectedRoleTitle((selectedRoleTitle || '').trim(), rolesFromCv);
-    const roleFromHistory = findLastRoleTitleInConversation(messages);
-    const roleFallbackFromCv = rolesFromCv[0]?.title || '';
-
-    const roleTitleForTurn =
-      (hasNextRole && nextRoleTitle) ||
-      chosenRoleTitle ||
-      roleFromClientResolved ||
-      roleFromHistory ||
-      roleFallbackFromCv ||
-      'WYBRANA ROLA';
-
-    const startingNextRoleNow = hasNextRole;
-    const startingChosenRoleNow = assistantWasAudit && !!chosenRoleTitle;
-
-    const interviewStartIdxBase = findInterviewStartIndex(messages);
-    const interviewStartIdx = startingNextRoleNow || startingChosenRoleNow ? messages.length : interviewStartIdxBase;
-
-    const userFactsText = preprocessCvSource(collectUserAnswers(messages, interviewStartIdx).join('\n'));
-    const roleBlock = extractRoleBlock(cvTextEffective || '', roleTitleForTurn);
-    const roleBlockText = preprocessCvSource(roleBlock || '');
-
-    const allUserTextForHeuristics = preprocessCvSource(
-      messages.filter((m) => m.role === 'user').map((m) => m.content).join('\n')
+    const cvTextEffective = preprocessCvSource(
+      (cvText && String(cvText)) ||
+        // fallback: weź najdłuższą wiadomość usera (żeby nie łapać „tak/1/nie wiem”)
+        (pickBestCvChunkFromMessages(messages) || '')
     );
 
-    const shouldAskProcess = shouldAskAcquisitionProcess(roleTitleForTurn, `${roleBlockText}\n${allUserTextForHeuristics}`);
+    // 0) Jeśli user wkleił nowe doświadczenie, to zawsze startujemy od audytu (nowy batch)
+    //    Heurystyka: jeśli last user wygląda jak doświadczenie (ma daty, |, myślnik), a w cvTextEffective go nie ma
+    //    (W MVP wystarczy: jeśli last user jest długi i ma znaki typowe)
+    const lastUserLooksLikeCvPaste = looksLikeExperiencePaste(lastUser);
+    const doneRoles = extractDoneRoles(messages);
 
-    const factsFromRole = extractInterviewFactsFromText(roleBlockText);
-    const factsFromUser = extractInterviewFactsFromText(userFactsText);
+    const roles = dedupeRoles(extractRolesFromCvText(cvTextEffective));
 
-    const facts: InterviewFacts = {
-      hasActions: factsFromRole.hasActions || factsFromUser.hasActions,
-      hasScale: factsFromRole.hasScale || factsFromUser.hasScale,
-      hasProcess: factsFromRole.hasProcess || factsFromUser.hasProcess,
-      hasResult: factsFromRole.hasResult || factsFromUser.hasResult,
-    };
-
-    const state =
-      startingNextRoleNow || startingChosenRoleNow
-        ? {
-            askedCounts: { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0 },
-            declinedCounts: { ACTIONS: 0, SCALE: 0, PROCESS: 0, RESULT: 0 },
-            askedTotal: 0,
-          }
-        : computeInterviewState(messages, interviewStartIdx);
-
-    const step = decideNextInterviewStep(shouldAskProcess, facts, state);
-
-    if (step.kind === 'ASK') {
-      let question = step.question;
-
-      const cant = userCannotShare(lastUser) || userNonAnswer(lastUser);
-
-      if (question === Q2 && cant) question = Q2_SAFE;
-      if (question === Q_RESULT && cant) question = Q_RESULT_SAFE;
-
-      const prefix = startingNextRoleNow
-        ? `Ok, lecimy dalej — teraz „${roleTitleForTurn}”. `
-        : startingChosenRoleNow
-          ? `Ok, w takim razie zacznijmy od „${roleTitleForTurn}”. `
-          : '';
-
-      const hint = buildHintForQuestion(step.qk, roleBlockText || roleTitleForTurn);
-      const deterministic = normalizeForUI(stripLeadingIndentAllLines(`${prefix}${question}${hint ? `\n${hint}` : ''}`), 1);
-      return NextResponse.json({ assistantText: deterministic });
+    if (!cvTextEffective || roles.length === 0) {
+      return NextResponse.json({
+        assistantText: normalizeForUI(
+          [
+            `Gotowy na dopracowanie CV? 🚀`,
+            `Wklej sekcję „Doświadczenie” (stanowiska + opisy), a ja zrobię szybki audyt i dopytam o konkrety, żeby zamienić ogólniki w mocny opis.`,
+            `Uwaga: w tej wersji MVP pracujemy tylko na Doświadczeniu.`,
+          ].join('\n'),
+          1
+        ),
+      });
     }
 
-    // === REWRITE ===
-    const openAIMessages: Array<{ role: string; content: string }> = [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'system', content: CONTEXT_PROMPT },
-      {
-        role: 'system',
-        content:
-          `Wygeneruj gotowy fragment DO WKLEJENIA DO CV (bez meta-komentarzy).\n` +
-          `- Tylko rola: „${roleTitleForTurn}”.\n` +
-          `- Popraw literówki z inputu (NIE zmieniaj liczb ani sensu faktów).\n` +
-          `- Format musi być dokładnie:\n` +
-          `=== BEFORE (${roleTitleForTurn}) ===\n(4–12 linii)\n=== AFTER (${roleTitleForTurn}) ===\n` +
-          `Wersja A (bezpieczna):\n- ... (3–8 bulletów, 1 linia = 1 bullet)\n` +
-          `Wersja B (mocniejsza):\n- ... (3–8 bulletów, 1 linia = 1 bullet)\n` +
-          `Chcesz poprawić kolejną rolę?\n\n` +
-          `Zasady:\n` +
-          `- Każdy bullet zaczyna się od "- " i jest gotowy do CV.\n` +
-          `- Wersja B MUSI różnić się od A (inna struktura + inne ujęcie, nie kopia).\n` +
-          `- Zero meta-fraz typu: "zgodnie z opisem", "z Twoich danych", "jeśli dotyczy", "Skala:".\n` +
-          `- Nie dodawaj faktów ani liczb, których użytkownik nie podał.\n` +
-          `- NIE przenoś metryk między rolami (używaj tylko danych tej roli).\n` +
-          `- Usuń twarde łamanie w środku zdań (hard-wrap).\n`,
-      },
-    ];
-
-    const block = roleBlockText || preprocessCvSource(cvTextEffective || '');
-    if (block.trim()) {
-      openAIMessages.push({ role: 'user', content: `[WYBRANA ROLA — ŹRÓDŁO]\n${block}` });
-    }
-    if (userFactsText.trim()) {
-      openAIMessages.push({ role: 'user', content: `[FAKTY OD UŻYTKOWNIKA — TYLKO DLA TEJ ROLI]\n${userFactsText}` });
-    }
-
-    let assistantText = '';
-    try {
-      assistantText = await callOpenAI(apiKey, modelRewrite, openAIMessages, 0.2);
-    } catch (e: any) {
-      const msg =
-        `Błąd połączenia z OpenAI API: ${e?.message || 'fetch failed'}.\n` +
-        `Jeśli uruchamiasz to w preview/webcontainer, możliwe że środowisko blokuje połączenia wychodzące.\n` +
-        `Odpal lokalnie albo po deployu (np. Vercel) i spróbuj ponownie.`;
-      return NextResponse.json({ assistantText: normalizeForUI(msg, 1) });
-    }
-
-    // === GUARD + FORMAT ===
-    let allowedFacts = `${roleBlockText}\n\n${userFactsText}`.trim();
-    if (!allowedFacts) allowedFacts = roleBlockText || preprocessCvSource(cvTextEffective || '');
-
-    const finalize = (txt: string) => {
-      let t = txt;
-      t = stripFencedCodeBlock(t);
-      t = stripLeadingIndentAllLines(t);
-      t = enforceRewriteRoleHeaders(t, roleTitleForTurn);
-      t = stripCvMetaAndFiller(t);
-      t = repairRewriteBullets(t);
-      t = enforceDashBulletsStrict(t);
-      t = dedupeBulletsInAB(t);
-      t = dedupeConsecutiveLines(t);
-      t = ensureRewriteCta(t);
-      t = normalizeForUI(t, 1);
-      return t;
-    };
-
-    assistantText = finalize(assistantText);
-
-    let needsFix =
-      !rewriteLooksValid(assistantText) ||
-      rewriteVersionsIdentical(assistantText) ||
-      hasUnverifiedNumbers(assistantText, allowedFacts) ||
-      hasBannedCausalPhrases(assistantText);
-
-    // formatter tries (max 2)
-    for (let attempt = 0; attempt < 2 && needsFix; attempt++) {
-      const formatterMessages: Array<{ role: string; content: string }> = [
-        {
-          role: 'system',
-          content:
-            `Jesteś FORMATTEREM. Napraw tekst do formatu CV bez dodawania faktów.\n` +
-            `- Tylko rola: "${roleTitleForTurn}".\n` +
-            `- Wersja B musi różnić się od A.\n` +
-            `- Zero meta.\n` +
-            `- Nie dodawaj liczb spoza źródeł.\n` +
-            `- A i B: 3–8 bulletów, każdy w 1 linii i zaczyna się od "- ".\n` +
-            `- Usuń hard-wrap.\n` +
-            `- Na końcu: Chcesz poprawić kolejną rolę?\n\n` +
-            `Wymagany format:\n` +
-            `=== BEFORE (${roleTitleForTurn}) ===\n` +
-            `(4–12 linii)\n` +
-            `=== AFTER (${roleTitleForTurn}) ===\n` +
-            `Wersja A (bezpieczna):\n` +
-            `- ...\n` +
-            `Wersja B (mocniejsza):\n` +
-            `- ...\n\n` +
-            `Chcesz poprawić kolejną rolę?`,
-        },
-        { role: 'user', content: `Źródła faktów (tylko ta rola):\n${allowedFacts}\n\nTekst do naprawy:\n${assistantText}` },
-      ];
-
-      try {
-        assistantText = await callOpenAI(apiKey, modelRewrite, formatterMessages, 0);
-      } catch (e: any) {
-        const msg = `Błąd połączenia z OpenAI API: ${e?.message || 'fetch failed'}. Spróbuj ponownie.`;
-        return NextResponse.json({ assistantText: normalizeForUI(msg, 1) });
+    // 1) Jeżeli user odpowiedział "tak" po rewrite i nie ma już ról → komunikat końcowy
+    if (looksLikeRewriteCta(lastAssistant) && isYes(lastUser)) {
+      const remaining = roles.filter((r) => !doneRoles.has(r.title));
+      if (remaining.length === 0) {
+        return NextResponse.json({
+          assistantText: normalizeForUI(
+            `Ok. Przerobiliśmy już wszystkie role, które wkleiłeś. Wklej kolejne stanowisko, a lecimy dalej.`,
+            1
+          ),
+        });
       }
-
-      assistantText = finalize(assistantText);
-
-      needsFix =
-        !rewriteLooksValid(assistantText) ||
-        rewriteVersionsIdentical(assistantText) ||
-        hasUnverifiedNumbers(assistantText, allowedFacts) ||
-        hasBannedCausalPhrases(assistantText);
+      // lecimy do kolejnej roli (pierwsza nieprzerobiona)
+      const nextRole = remaining[0];
+      return NextResponse.json({
+        assistantText: normalizeForUI(startRoleIntro(nextRole.title) + '\n' + buildFirstQuestionForRole(nextRole, cvTextEffective, messages), 1),
+      });
     }
 
-    if (needsFix) {
-      const msg =
-        `Nie udało się wygenerować stabilnego rewritu w wymaganym formacie (guard fail).\n` +
-        `Wyślij jeszcze raz tę samą wiadomość albo wklej 1–2 konkrety (actions/scale/result), żeby model miał mocniejszy kontekst.`;
-      return NextResponse.json({ assistantText: normalizeForUI(msg, 1) });
+    // 2) Jeżeli ostatni assistant prosił o numer roli i user podał numer → start wybranej roli
+    if (looksLikeRoleChoicePrompt(lastAssistant)) {
+      const idx = parseChoiceIndex(lastUser);
+      if (idx != null && idx >= 1 && idx <= roles.length) {
+        const picked = roles[idx - 1];
+        return NextResponse.json({
+          assistantText: normalizeForUI(startRoleIntro(picked.title) + '\n' + buildFirstQuestionForRole(picked, cvTextEffective, messages), 1),
+        });
+      }
+      // user nie podał poprawnie numeru → pokaż audit jeszcze raz
+      return NextResponse.json({ assistantText: normalizeForUI(buildAudit(roles, cvTextEffective), 1) });
     }
 
-    return NextResponse.json({ assistantText });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : 'An unexpected error occurred. Please try again.';
-    console.error('Chat API error:', error);
-    return NextResponse.json({ error: `Server error: ${msg}` }, { status: 500 });
+    // 3) Jeżeli mamy selectedRoleTitle z body – traktuj to jako aktywną rolę
+    //    (ale w MVP i tak głównie jedziemy po inferencji z rozmowy)
+    const selectedFromBody = selectedRoleTitleFromBody ? String(selectedRoleTitleFromBody) : '';
+
+    // 4) Jeśli last assistant jest CTA albo user wkleił nowe CV → AUDIT (żeby utrzymać prosty flow)
+    //    (W praktyce: jeśli user wkleił nowe doświadczenie, nie próbujemy zgadywać roli “w locie”)
+    if (lastUserLooksLikeCvPaste && !looksLikeRewriteCta(lastAssistant)) {
+      return NextResponse.json({ assistantText: normalizeForUI(buildAudit(roles, cvTextEffective), 1) });
+    }
+
+    // 5) Spróbuj ustalić aktywną rolę:
+    //    - jeśli jesteśmy w trakcie roli (ostatnie "zaczniemy od") -> ta rola
+    //    - inaczej: pierwsza nieprzerobiona
+    //    - inaczej: selectedRoleTitleFromBody
+    const activeRoleTitle =
+      inferActiveRoleTitleFromChat(messages) ||
+      roles.find((r) => !doneRoles.has(r.title))?.title ||
+      (selectedFromBody && roles.find((r) => eqRole(r.title, selectedFromBody))?.title) ||
+      '';
+
+    // 6) Jeśli nie mamy aktywnej roli i jest >1 rola → audit + wybór
+    if (!activeRoleTitle && roles.length > 1) {
+      return NextResponse.json({ assistantText: normalizeForUI(buildAudit(roles, cvTextEffective), 1) });
+    }
+
+    // 7) Jeśli jest tylko 1 rola i nie przerobiona → start roli
+    if (!activeRoleTitle && roles.length === 1 && !doneRoles.has(roles[0].title)) {
+      const r = roles[0];
+      return NextResponse.json({
+        assistantText: normalizeForUI(startRoleIntro(r.title) + '\n' + buildFirstQuestionForRole(r, cvTextEffective, messages), 1),
+      });
+    }
+
+    // 8) Jeśli aktywna rola jest już przerobiona, a nie jesteśmy po CTA → audit (bezpiecznik)
+    if (activeRoleTitle && doneRoles.has(activeRoleTitle)) {
+      return NextResponse.json({ assistantText: normalizeForUI(buildAudit(roles, cvTextEffective), 1) });
+    }
+
+    // 9) Przetwarzamy aktywną rolę: pytania -> rewrite
+    const activeRole = roles.find((r) => eqRole(r.title, activeRoleTitle)) || roles[0];
+
+    const roleBlockText = preprocessCvSource(extractRoleBlock(cvTextEffective, activeRole.title) || activeRole.headerLine);
+
+    // zbuduj state (co już pytaliśmy i jak user odpowiadał) TYLKO w obrębie tej roli
+    const state = computeRoleState(messages, activeRole.title);
+
+    // zbuduj "fakty" z roli + z odpowiedzi usera
+    const userFacts = buildUserFactsFromRoleConversation(messages, activeRole.title);
+    const factsText = preprocessCvSource(
+      [
+        userFacts.ACTIONS ? `ACTIONS: ${userFacts.ACTIONS}` : '',
+        userFacts.SCALE ? `SCALE: ${userFacts.SCALE}` : '',
+        userFacts.RESULT ? `RESULT: ${userFacts.RESULT}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
+    );
+
+    const missing = computeMissing(roleBlockText, userFacts);
+
+    // decyzja: pytanie czy rewrite
+    const nextQ = pickNextQuestion(missing, state);
+
+    if (nextQ) {
+      const q = buildQuestion(nextQ, activeRole.title, roleBlockText);
+      return NextResponse.json({ assistantText: normalizeForUI(startRoleIntro(activeRole.title) + '\n' + q, 1) });
+    }
+
+    // 10) REWRITE A/B (LLM + fallback)
+    const allowedFacts = preprocessCvSource(`${roleBlockText}\n${factsText}`);
+
+    const userPrompt = buildRewritePrompt(activeRole.title, roleBlockText, factsText);
+
+    let llmOut = '';
+    try {
+      llmOut = await callOpenAI(apiKey, modelRewrite, [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: userPrompt },
+      ]);
+    } catch {
+      llmOut = '';
+    }
+
+    let out = cleanLlMOutput(llmOut);
+
+    if (out) {
+      out = enforceHeadersAndBullets(out, activeRole.title, roleBlockText);
+      out = normalizeForUI(out, 1);
+
+      const invalid =
+        !rewriteLooksValid(out, activeRole.title) ||
+        rewriteVersionsIdentical(out) ||
+        hasUnverifiedNumbers(out, allowedFacts) ||
+        hasBadArtifacts(out);
+
+      if (!invalid) {
+        return NextResponse.json({ assistantText: out });
+      }
+    }
+
+    const fallback = buildDeterministicFallback(activeRole.title, roleBlockText, userFacts);
+    const fallbackOut = normalizeForUI(fallback, 1);
+    return NextResponse.json({ assistantText: fallbackOut });
+  } catch (err: any) {
+    const msg = err?.message ? String(err.message).slice(0, 300) : 'Server error';
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
 
+/** =========================
+ *  Validation
+ *  ========================= */
+function validateRequestBody(raw: any): { ok: true; body: RequestBody } | { ok: false; error: string; status: number } {
+  if (!raw || typeof raw !== 'object') return { ok: false, error: 'Invalid body', status: 400 };
+  if (!Array.isArray(raw.messages)) return { ok: false, error: 'messages must be an array', status: 400 };
+
+  const messages: Message[] = [];
+  for (const m of raw.messages) {
+    if (!m || typeof m !== 'object') continue;
+    const role = m.role;
+    const content = m.content;
+    if ((role !== 'user' && role !== 'assistant') || typeof content !== 'string') continue;
+    messages.push({ role, content });
+  }
+
+  return { ok: true, body: { messages, cvText: raw.cvText, selectedRoleTitle: raw.selectedRoleTitle } };
+}
+
+/** =========================
+ *  Core helpers
+ *  ========================= */
+function preprocessCvSource(text: string): string {
+  return String(text ?? '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function normalizeForUI(text: string, _indent = 1): string {
+  return preprocessCvSource(text);
+}
+
+function lastText(messages: Message[], role: Role): string {
+  for (let i = (messages?.length || 0) - 1; i >= 0; i--) {
+    if (messages[i]?.role === role) return String(messages[i]?.content ?? '');
+  }
+  return '';
+}
+
+function pickBestCvChunkFromMessages(messages: Message[]): string {
+  const users = (messages || []).filter((m) => m.role === 'user').map((m) => String(m.content ?? ''));
+  // weź najdłuższy „sensowny” fragment
+  let best = '';
+  for (const u of users) {
+    const s = preprocessCvSource(u);
+    if (s.length < 120) continue;
+    if (!looksLikeExperiencePaste(s)) continue;
+    if (s.length > best.length) best = s;
+  }
+  return best;
+}
+
+function looksLikeExperiencePaste(text: string): boolean {
+  const s = preprocessCvSource(text).toLowerCase();
+  if (s.length < 120) return false;
+  // heurystyki typowe dla doświadczenia
+  const hasDates = /\b(0?[1-9]|1[0-2])\.\d{4}\b/.test(s) || /\b(19|20)\d{2}\b/.test(s);
+  const hasPipe = s.includes('|');
+  const hasDash = s.includes(' - ') || s.includes('–') || s.includes('—');
+  const hasBulletsOrLines = s.split('\n').length >= 3;
+  return (hasDates && (hasPipe || hasDash) && hasBulletsOrLines) || (hasPipe && hasBulletsOrLines);
+}
+
+/** =========================
+ *  Role parsing
+ *  ========================= */
+function extractRolesFromCvText(text: string): RoleItem[] {
+  const lines = preprocessCvSource(text).split('\n').map((l) => l.trim());
+  const roles: RoleItem[] = [];
+
+  const isHeader = (l: string) => {
+    // typowa linia roli: "Stanowisko - Firma, Miasto | 03.2021 – obecnie"
+    if (!l) return false;
+    const hasTitleDash = /.+\s-\s.+/.test(l);
+    const hasPipe = l.includes('|');
+    const hasDateSignal = /\b(0?[1-9]|1[0-2])\.\d{4}\b/.test(l) || /\bobecnie\b/i.test(l);
+    return (hasTitleDash && (hasPipe || hasDateSignal)) || (hasPipe && hasDateSignal);
+  };
+
+  // znajdź nagłówki
+  const headerIdxs: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (isHeader(lines[i])) headerIdxs.push(i);
+  }
+
+  for (let k = 0; k < headerIdxs.length; k++) {
+    const start = headerIdxs[k];
+    const end = (k + 1 < headerIdxs.length ? headerIdxs[k + 1] : lines.length) - 1;
+
+    const headerLine = lines[start];
+    const title = parseTitleFromHeader(headerLine) || headerLine.split('|')[0].trim();
+
+    if (!title) continue;
+    roles.push({ title: cleanupRoleTitle(title), headerLine, startLine: start, endLine: end });
+  }
+
+  // fallback: jeśli nie wykryliśmy nagłówków, spróbuj 2-liniowego wariantu:
+  // linia 1: stanowisko, linia 2: "Firma ... | daty"
+  if (roles.length === 0) {
+    for (let i = 0; i < lines.length - 1; i++) {
+      const l1 = lines[i];
+      const l2 = lines[i + 1];
+      if (!l1 || !l2) continue;
+      const l2HasDates = l2.includes('|') && (/\b(0?[1-9]|1[0-2])\.\d{4}\b/.test(l2) || /\bobecnie\b/i.test(l2));
+      const l1LooksLikeTitle = l1.length >= 6 && l1.length <= 80 && !l1.includes('|') && !/\d{4}/.test(l1);
+      if (l1LooksLikeTitle && l2HasDates) {
+        roles.push({
+          title: cleanupRoleTitle(l1),
+          headerLine: `${l1} - ${l2}`,
+          startLine: i,
+          endLine: i + 1,
+        });
+      }
+    }
+  }
+
+  return roles;
+}
+
+function parseTitleFromHeader(headerLine: string): string {
+  const s = headerLine;
+  // tytuł do pierwszego " - " (jeśli jest)
+  const dashIdx = s.indexOf(' - ');
+  if (dashIdx > 0) return s.slice(0, dashIdx).trim();
+  // tytuł do "|" (fallback)
+  const pipeIdx = s.indexOf('|');
+  if (pipeIdx > 0) return s.slice(0, pipeIdx).trim();
+  return s.trim();
+}
+
+function cleanupRoleTitle(title: string): string {
+  return title.replace(/\s{2,}/g, ' ').trim();
+}
+
+function dedupeRoles(roles: RoleItem[]): RoleItem[] {
+  const seen = new Set<string>();
+  const out: RoleItem[] = [];
+  for (const r of roles) {
+    const key = r.title.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out;
+}
+
+function extractRoleBlock(fullText: string, roleTitle: string): string {
+  const lines = preprocessCvSource(fullText).split('\n');
+  const lowerTitle = roleTitle.toLowerCase();
+
+  // znajdź nagłówek roli
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i].toLowerCase();
+    if (l.includes(lowerTitle)) {
+      // ogranicz fałszywe trafienia: nagłówek zwykle ma "|" lub " - "
+      if (lines[i].includes('|') || lines[i].includes(' - ') || /\b(0?[1-9]|1[0-2])\.\d{4}\b/.test(lines[i])) {
+        start = i;
+        break;
+      }
+    }
+  }
+  if (start === -1) return '';
+
+  // idź do następnego nagłówka podobnego wzorca albo końca
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    const li = lines[i].trim();
+    if (!li) continue;
+    const looksLikeNextHeader =
+      (li.includes(' - ') && li.includes('|')) ||
+      (li.includes('|') && /\b(0?[1-9]|1[0-2])\.\d{4}\b/.test(li)) ||
+      (li.includes('|') && /\bobecnie\b/i.test(li));
+    if (looksLikeNextHeader) {
+      end = i;
+      break;
+    }
+  }
+
+  return lines.slice(start, end).join('\n').trim();
+}
+
+/** =========================
+ *  Audit output
+ *  ========================= */
+function computeMissing(roleBlockText: string, userFacts: Partial<Record<QuestionKind, string>>): { missing: QuestionKind[]; notes: string[] } {
+  const t = preprocessCvSource(roleBlockText).toLowerCase();
+
+  const hasNum = /\d/.test(t);
+  const hasScaleSignal = /\b(tydz|tydzień|tygodniowo|mies|miesięcznie|budżet|spend|pipeline|kampani|ofert|spotkan|lead|zgłosz|ticket)\b/i.test(t);
+  const hasResultSignal =
+    /\b(roas|cac|cpa|ctr|cr|ltv|mrr|arr|przych[oó]d|win rate|konwersj|nps|csat|sla|kpi)\b/i.test(t) ||
+    /\b(wzrost|spadek|poprawa)\b/i.test(t);
+
+  const actionsOk = !!(userFacts.ACTIONS && userFacts.ACTIONS.trim()) || /\b(pozyskiwan|prowadzen|wdroż|optymaliz|negocjac|tworzen|analiz|zarz[aą]dz)\b/i.test(t);
+  const scaleOk = !!(userFacts.SCALE && userFacts.SCALE.trim()) || (hasNum && hasScaleSignal);
+  const resultOk = !!(userFacts.RESULT && userFacts.RESULT.trim()) || (hasNum && hasResultSignal);
+
+  const missing: QuestionKind[] = [];
+  const notes: string[] = [];
+
+  if (!actionsOk) missing.push('ACTIONS');
+  if (!scaleOk) missing.push('SCALE');
+  if (!resultOk) missing.push('RESULT');
+
+  if (missing.includes('RESULT')) notes.push('braki: wynik/proxy (metryka)');
+  if (missing.includes('SCALE')) notes.push('braki: skala (1 liczba/widełki)');
+  if (missing.includes('ACTIONS')) notes.push('braki: konkrety działań (co Ty zrobiłeś)');
+
+  return { missing, notes };
+}
+
+function buildAudit(roles: RoleItem[], fullText: string): string {
+  const header = [
+    `Cel: zamieniamy “obowiązki” na IMPACT.`,
+    `W CV liczy się: co zrobiłeś (actions) • w jakiej skali (scale) • jaki efekt (result)`,
+    ``,
+    `Już wiem, co poprawić. Wybierz rolę do dopracowania:`,
+    ``,
+  ].join('\n');
+
+  const lines: string[] = [header];
+
+  roles.forEach((r, i) => {
+    const block = preprocessCvSource(extractRoleBlock(fullText, r.title) || r.headerLine);
+    const { notes } = computeMissing(block, {});
+    lines.push(`${i + 1}. ${r.title}`);
+    lines.push(notes.length ? `   ${notes.join(' | ')}` : `   braki: (brak oczywistych)`);
+    lines.push('');
+  });
+
+  lines.push(`Wpisz numer: 1–${roles.length}`);
+  return lines.join('\n').trim();
+}
+
+/** =========================
+ *  Role progression
+ *  ========================= */
+function extractDoneRoles(messages: Message[]): Set<string> {
+  const done = new Set<string>();
+  for (const m of messages || []) {
+    if (m.role !== 'assistant') continue;
+    const s = String(m.content ?? '');
+    const match = s.match(/===\s*AFTER\s*\((.+?)\)\s*===/i);
+    if (match?.[1]) done.add(match[1].trim());
+  }
+  return done;
+}
+
+function inferActiveRoleTitleFromChat(messages: Message[]): string {
+  for (let i = (messages?.length || 0) - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role !== 'assistant') continue;
+    const s = String(m.content ?? '');
+    const m1 = s.match(/zaczni(?:j|my)\s+od\s+„(.+?)”/i);
+    if (m1?.[1]) return m1[1].trim();
+    const m2 = s.match(/===\s*BEFORE\s*\((.+?)\)\s*===/i);
+    if (m2?.[1]) return m2[1].trim();
+  }
+  return '';
+}
+
+function startRoleIntro(roleTitle: string): string {
+  return `Ok, w takim razie zacznijmy od „${roleTitle}”.`;
+}
+
+function looksLikeRoleChoicePrompt(text: string): boolean {
+  const s = String(text ?? '').toLowerCase();
+  return s.includes('wpisz numer') && s.includes('1–');
+}
+
+function parseChoiceIndex(text: string): number | null {
+  const s = String(text ?? '').trim();
+  const m = s.match(/^(\d{1,2})$/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function looksLikeRewriteCta(text: string): boolean {
+  const s = String(text ?? '').toLowerCase();
+  return s.includes('chcesz poprawić kolejną rolę?');
+}
+
+function isYes(text: string): boolean {
+  const s = String(text ?? '').trim().toLowerCase();
+  return s === 'tak' || s === 't' || s === 'yes' || s === 'y' || s.includes('lecimy') || s.includes('dalej');
+}
+
+function looksLikeDeclineAnswer(text: string): boolean {
+  const s = String(text ?? '').toLowerCase().trim();
+  return (
+    s === '?' ||
+    s.includes('nie wiem') ||
+    s.includes('brak danych') ||
+    s.includes('nie pamiętam') ||
+    s.includes('nie pamietam') ||
+    s.includes('nie mogę podać') ||
+    s.includes('nie moge podac') ||
+    s.includes('nie podam') ||
+    s.includes('n/a')
+  );
+}
+
+function eqRole(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/** =========================
+ *  Q/A state per role
+ *  ========================= */
+function inferLastAskedKind(text: string): QuestionKind | null {
+  const t = String(text ?? '').toLowerCase();
+
+  if (t.includes('co konkretnie ty zrobi') || t.includes('twoje działani') || t.includes('twoje dzialani')) return 'ACTIONS';
+  if (t.includes('podaj skal') || t.includes('jaka była skala') || t.includes('jaka byla skala') || t.includes('ile tego było') || t.includes('wolumen'))
+    return 'SCALE';
+  if (t.includes('jaki był efekt') || t.includes('jaki byl efekt') || t.includes('jaki był wynik') || t.includes('jaki byl wynik') || t.includes('podaj 1–2'))
+    return 'RESULT';
+
+  // fallback: regexy
+  if (/\bco\s+konkretnie\b/i.test(t)) return 'ACTIONS';
+  if (/\bskala\b/i.test(t)) return 'SCALE';
+  if (/\b(efekt|wynik)\b/i.test(t)) return 'RESULT';
+
+  return null;
+}
+
+function computeRoleState(messages: Message[], roleTitle: string): { asked: Set<QuestionKind>; declined: Set<QuestionKind> } {
+  const asked = new Set<QuestionKind>();
+  const declined = new Set<QuestionKind>();
+
+  const startIdx = findRoleStartIndex(messages, roleTitle);
+  let lastAsked: QuestionKind | null = null;
+
+  for (let i = startIdx; i < (messages?.length || 0); i++) {
+    const m = messages[i];
+    const role = m.role;
+    const text = String(m.content ?? '');
+
+    if (role === 'assistant') {
+      const k = inferLastAskedKind(text);
+      if (k) {
+        asked.add(k);
+        lastAsked = k;
+      } else {
+        lastAsked = null;
+      }
+    }
+
+    if (role === 'user') {
+      if (lastAsked && looksLikeDeclineAnswer(text)) {
+        declined.add(lastAsked);
+        lastAsked = null;
+      } else if (lastAsked) {
+        // odpowiedź jest – nie resetujemy declined, tylko kończymy to pytanie
+        lastAsked = null;
+      }
+    }
+  }
+
+  return { asked, declined };
+}
+
+function findRoleStartIndex(messages: Message[], roleTitle: string): number {
+  for (let i = (messages?.length || 0) - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== 'assistant') continue;
+    const s = String(m.content ?? '');
+    if (s.includes(`zaczni` ) && s.includes(`„${roleTitle}”`)) return i;
+  }
+  return 0;
+}
+
+function buildUserFactsFromRoleConversation(messages: Message[], roleTitle: string): Partial<Record<QuestionKind, string>> {
+  const startIdx = findRoleStartIndex(messages, roleTitle);
+  const facts: Partial<Record<QuestionKind, string>> = {};
+
+  let pending: QuestionKind | null = null;
+
+  for (let i = startIdx; i < (messages?.length || 0); i++) {
+    const m = messages[i];
+    if (m.role === 'assistant') {
+      pending = inferLastAskedKind(m.content);
+    } else if (m.role === 'user') {
+      if (pending) {
+        const ans = preprocessCvSource(m.content);
+        if (ans && !looksLikeDeclineAnswer(ans)) {
+          // zapisujemy pierwszą sensowną odpowiedź, nie nadpisujemy
+          if (!facts[pending]) facts[pending] = ans;
+        }
+        pending = null;
+      }
+    }
+  }
+
+  return facts;
+}
+
+/** =========================
+ *  Questions
+ *  ========================= */
+function computeMissingKinds(roleBlockText: string, userFacts: Partial<Record<QuestionKind, string>>): QuestionKind[] {
+  return computeMissing(roleBlockText, userFacts).missing;
+}
+
+function pickNextQuestion(missing: { missing: QuestionKind[]; notes: string[] }, state: { asked: Set<QuestionKind>; declined: Set<QuestionKind> }): QuestionKind | null {
+  const order: QuestionKind[] = ['ACTIONS', 'SCALE', 'RESULT'];
+
+  for (const k of order) {
+    if (!missing.missing.includes(k)) continue;
+    if (state.declined.has(k)) continue;
+    // pytamy max 1x o dany typ w MVP
+    if (state.asked.has(k)) continue;
+    return k;
+  }
+  return null;
+}
+
+function buildFirstQuestionForRole(role: RoleItem, fullText: string, messages: Message[]): string {
+  const roleBlockText = preprocessCvSource(extractRoleBlock(fullText, role.title) || role.headerLine);
+  const state = computeRoleState(messages, role.title);
+  const facts = buildUserFactsFromRoleConversation(messages, role.title);
+  const missing = computeMissing(roleBlockText, facts);
+  const nextQ = pickNextQuestion(missing, state);
+  if (!nextQ) return `Mam już wszystko do rewrite. Lecimy.`;
+  return buildQuestion(nextQ, role.title, roleBlockText);
+}
+
+function buildQuestion(kind: QuestionKind, roleTitle: string, roleText: string): string {
+  // MVP: krótkie, konkretne pytania bez baseline gate (żeby nie pętlić)
+  switch (kind) {
+    case 'ACTIONS':
+      return `Co konkretnie Ty zrobiłeś w tej roli? Podaj 2–4 działania (czasowniki + obiekt), bez ogólników.`;
+    case 'SCALE':
+      return `Podaj skalę (1–2): np. #kampanii / mies., budżet (widełki), #leadów / mies., #ofert / tydz., #spotkań / mies.`;
+    case 'RESULT':
+      return `Jaki był efekt? Podaj 1–2 KPI/proxy (może być widełki/%/trend). Np. ROAS/CPA/CAC/CTR/CR, przychód/MRR, win rate, SLA/CSAT.`;
+    default:
+      return `Doprecyzuj proszę 1–2 kluczowe szczegóły.`;
+  }
+}
+
+/** =========================
+ *  Rewrite prompt + LLM
+ *  ========================= */
+function buildRewritePrompt(roleTitle: string, beforeText: string, userFactsText: string): string {
+  const factsSection = userFactsText?.trim() ? userFactsText.trim() : '(brak)';
+  return [
+    CONTEXT_PROMPT,
+    ``,
+    `Zadanie: Przerób opis doświadczenia na CV w formie IMPACT. Nie wymyślaj faktów.`,
+    `Rola: ${roleTitle}`,
+    ``,
+    `BEFORE (źródło, wklej 1:1 w sekcji BEFORE):`,
+    beforeText,
+    ``,
+    `DODATKOWE FAKTY OD USERA (jeśli są):`,
+    factsSection,
+    ``,
+    `Wymagany format WYJŚCIA (bez markdown, bez bloków kodu):`,
+    `=== BEFORE (${roleTitle}) ===`,
+    `(wklej 1:1 treść BEFORE, max ~12 linii)`,
+    `=== AFTER (${roleTitle}) ===`,
+    `Wersja A (bezpieczna):`,
+    `- 3–6 bulletów (myślniki, jeden poziom)`,
+    `Wersja B (mocniejsza):`,
+    `- 3–6 bulletów (myślniki, jeden poziom)`,
+    ``,
+    `Zasady:`,
+    `- NIE dodawaj nowych liczb/metryk (używaj tylko tych z BEFORE lub z faktów usera).`,
+    `- Bullets muszą zaczynać się od czasownika i być konkretne.`,
+    `- Wersja B ma być mocniejsza stylistycznie, ale bez nowych faktów i bez “Realizacja:”.`,
+    `- Nie wstawiaj żadnych etykiet typu "BASELINE/KONTEXT", nie dopisuj komentarzy.`,
+    `Zakończ dokładnie linią: "Chcesz poprawić kolejną rolę?"`,
+  ].join('\n');
+}
+
+async function callOpenAI(apiKey: string, model: string, messages: { role: 'system' | 'user'; content: string }[]) {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature: 0.2,
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`OpenAI error: ${res.status}`);
+  }
+
+  const data: any = await res.json();
+  const out = data?.choices?.[0]?.message?.content;
+  return String(out ?? '');
+}
+
+/** =========================
+ *  Output cleaning + validation
+ *  ========================= */
+function cleanLlMOutput(text: string): string {
+  let out = String(text ?? '').trim();
+
+  // strip fenced code
+  out = out.replace(/```[\s\S]*?```/g, '').trim();
+
+  // usuń artefakty typu "Realizacja:"
+  out = out.replace(/(^|\n)\s*-\s*Realizacja:\s*/g, '$1- ');
+
+  // usuń jakiekolwiek linie zaczynające się od labeli sterujących (gdyby model je zwrócił)
+  out = out
+    .split('\n')
+    .filter((l) => !/^\s*(RESULT|BASELINE\/KONTEXT)\b/i.test(l.trim()))
+    .join('\n')
+    .trim();
+
+  // normalize bullets: • -> -
+  out = out.replace(/(^|\n)\s*•\s+/g, '$1- ');
+
+  return out;
+}
+
+function enforceHeadersAndBullets(out: string, roleTitle: string, beforeText: string): string {
+  // jeśli model nie wklei BEFORE 1:1, to my wymusimy BEFORE deterministycznie
+  const beforeHeader = `=== BEFORE (${roleTitle}) ===`;
+  const afterHeader = `=== AFTER (${roleTitle}) ===`;
+
+  // wytnij wszystko przed AFTER (albo dodaj)
+  let body = out;
+
+  // wymuś obecność AFTER
+  if (!new RegExp(escapeRegex(afterHeader), 'i').test(body)) {
+    // brak struktury -> zwróć pusty, żeby odpalił fallback
+    return '';
+  }
+
+  // zawsze podstaw BEFORE sekcją deterministyczną
+  const afterIdx = body.toLowerCase().indexOf(afterHeader.toLowerCase());
+  const afterPart = body.slice(afterIdx);
+
+  // dopnij nagłówki
+  const rebuilt = [
+    beforeHeader,
+    preprocessCvSource(beforeText).split('\n').slice(0, 12).join('\n'),
+    '',
+    afterPart.trim(),
+  ].join('\n');
+
+  // wymuś myślniki
+  return rebuilt.replace(/(^|\n)\s*•\s+/g, '$1- ').trim();
+}
+
+function rewriteLooksValid(out: string, roleTitle: string): boolean {
+  const hasHeaders =
+    new RegExp(`===\\s*BEFORE\\s*\\(${escapeRegex(roleTitle)}\\)\\s*===`, 'i').test(out) &&
+    new RegExp(`===\\s*AFTER\\s*\\(${escapeRegex(roleTitle)}\\)\\s*===`, 'i').test(out);
+
+  const hasA = /Wersja A/i.test(out);
+  const hasB = /Wersja B/i.test(out);
+
+  const aBullets = extractBulletsFromSection(out, 'A');
+  const bBullets = extractBulletsFromSection(out, 'B');
+
+  return hasHeaders && hasA && hasB && aBullets.length >= 3 && bBullets.length >= 3 && out.includes('Chcesz poprawić kolejną rolę?');
+}
+
+function extractBulletsFromSection(out: string, which: 'A' | 'B'): string[] {
+  const s = out.split('\n');
+  let in = false;
+  const bullets: string[] = [];
+
+  for (const line of s) {
+    const l = line.trim();
+    if (/^Wersja A/i.test(l)) in = which === 'A';
+    if (/^Wersja B/i.test(l)) in = which === 'B';
+
+    if (in && l.startsWith('- ')) bullets.push(l);
+  }
+  return bullets;
+}
+
+function rewriteVersionsIdentical(out: string): boolean {
+  const a = extractBulletsFromSection(out, 'A').map(normBullet);
+  const b = extractBulletsFromSection(out, 'B').map(normBullet);
+  if (!a.length || !b.length) return true;
+  const aJoined = a.join('\n');
+  const bJoined = b.join('\n');
+  return aJoined === bJoined;
+}
+
+function normBullet(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9ąćęłńóśźż %]/gi, '').replace(/\s+/g, ' ').trim();
+}
+
+function hasBadArtifacts(out: string): boolean {
+  const s = out.toLowerCase();
+  return s.includes('baseline/kontekst') || s.includes('realizacja:') || s.includes('z ostatniej odpowiedzi usera');
+}
+
+function hasUnverifiedNumbers(out: string, allowedFacts: string): boolean {
+  // MVP: prosta ochrona – jeśli pojawiła się liczba w AFTER której nie ma w BEFORE+facts, to invalid
+  const allowed = preprocessCvSource(allowedFacts);
+  const nums = Array.from(new Set((out.match(/\d+[.,]?\d*/g) || []).map((x) => x.replace(',', '.'))));
+  for (const n of nums) {
+    if (!allowed.includes(n) && !allowed.includes(n.replace('.', ','))) {
+      // wyjątek: 1–2, 3–6 itp. (instrukcje)
+      if (/^\d+$/.test(n) && (n === '1' || n === '2' || n === '3' || n === '6' || n === '8' || n === '12')) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** =========================
+ *  Deterministic fallback
+ *  ========================= */
+function buildDeterministicFallback(roleTitle: string, beforeText: string, facts: Partial<Record<QuestionKind, string>>): string {
+  const beforeHeader = `=== BEFORE (${roleTitle}) ===`;
+  const afterHeader = `=== AFTER (${roleTitle}) ===`;
+
+  const lines = preprocessCvSource(beforeText).split('\n').filter(Boolean);
+
+  const verbify = (x: string) =>
+    x
+      .replace(/^Pozyskiwanie/i, 'Pozyskiwałem')
+      .replace(/^Prowadzenie/i, 'Prowadziłem')
+      .replace(/^Realizowanie/i, 'Realizowałem')
+      .replace(/^Wsparcie/i, 'Wspierałem')
+      .trim();
+
+  const baseBullets = [
+    facts.ACTIONS ? `- ${shorten(facts.ACTIONS)}` : '',
+    facts.SCALE ? `- Skala: ${shorten(facts.SCALE)}` : '',
+    facts.RESULT ? `- Efekt: ${shorten(facts.RESULT)}` : '',
+  ].filter(Boolean);
+
+  // jeśli brak faktów, weź 2–3 zdania z BEFORE i zrób z nich bullets
+  const fromBefore = lines.slice(2, 6).map((l) => l.replace(/^\-+\s*/, '').trim()).filter(Boolean);
+
+  const aBullets = (baseBullets.length ? baseBullets : fromBefore.slice(0, 3).map((l) => `- ${l}`)).slice(0, 6);
+
+  const bBullets = aBullets
+    .map((b) => `- ${verbify(b.replace(/^- /, '').trim())}`)
+    .map((b) => b.replace(/- skala:/i, '- Skala:').replace(/- efekt:/i, '- Efekt:'))
+    .slice(0, 6);
+
+  return [
+    beforeHeader,
+    lines.slice(0, 12).join('\n'),
+    '',
+    afterHeader,
+    `Wersja A (bezpieczna):`,
+    ...aBullets,
+    `Wersja B (mocniejsza):`,
+    ...bBullets,
+    `Chcesz poprawić kolejną rolę?`,
+  ].join('\n');
+}
+
+function shorten(s?: string): string {
+  const t = preprocessCvSource(s || '');
+  if (t.length <= 180) return t;
+  return t.slice(0, 177).trim() + '…';
+}
