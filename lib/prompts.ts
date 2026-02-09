@@ -157,8 +157,6 @@ Wsparcie handlowców w bieżącej sprzedaży: przygotowanie ofert, aktualizacja 
 // Marketing (celowo: są metryki performance, ale brak punktu odniesienia → ma pytać o CONTEXT)
 `Specjalista ds. Marketingu Performance - REKLAMOPOL, zdalnie | 06.2022 – 12.2024
 Prowadzenie kampanii Google Ads i Meta Ads: optymalizacja budżetów, kreacji i landingów, testy A/B, raportowanie wyników.
-Miesięczne budżety na poziomie 40–70 tys. zł; równolegle kilkanaście kampanii.
-Wyniki kampanii: ROAS ok. 4.2, CPA ok. 32 zł, CAC ok. 38 zł, CTR ok. 2.3%.
 
 Koordynator Social Media - Media Star | 01.2021 – 05.2022
 Planowanie publikacji, przygotowanie treści i harmonogramów, współpraca z grafikiem, moderacja komentarzy i wiadomości.
