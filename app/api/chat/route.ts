@@ -291,33 +291,25 @@ function getRoleProfile(title: string, text: string): 'BIZ' | 'TECH' | 'SUPPORT'
   const combined = (title + ' ' + text).toLowerCase();
   
   // 1. TECH (Developerzy, Testerzy, Admini IT)
-  if (/\b(dev|software|engineer|test|tech|it|cloud|data|analy|qa|python|java|system|programis|informatyk)/i.test(combined)) {
+  // FIX: Usunięto: system, data, analy, tech, test.
+  // Dodano: tester, sql, linux, baza.
+  if (/\b(dev|software|engineer|tester|qa|it|cloud|python|java|programis|informatyk|sql|linux|azure|aws|baza|kod)/i.test(combined)) {
     return 'TECH';
   }
 
   // 2. SALES/BIZ (Tylko stricte sprzedażowe role)
-  // UWAGA: Usunęliśmy stąd "manager", "dyrektor", "kierownik", żeby PM nie wpadał tutaj.
   if (/\b(sprzeda|sales|handlow|b2b|account|revenue|target|przych|negocjac|prospect|lead|funnel|lejek)/i.test(combined)) {
     return 'BIZ';
   }
   
   // 3. SUPPORT (Admin, PM, Obsługa Klienta)
-  // Tutaj wpadnie Asystent PM i Koordynator (dostaną pytania o dokumenty/zespół)
+  // Tutaj wpada "Obsługa Klienta" (przez słowo obsługa/klient)
   if (/\b(obsługa|klient|admin|biur|sekretariat|rezerwacj|wsparcie|support|helpdesk|office|dokument|asysten|recepcj|koordynac|project|projekt)/i.test(combined)) {
     return 'SUPPORT';
   }
   
   // 4. Fallback -> BIZ (Marketing, HR, Management ogólny)
   return 'BIZ';
-}
-
-function preprocessCvSource(text: string): string {
-  return String(text ?? '')
-    .replace(/\r\n/g, '\n')
-    .replace(/\u00A0/g, ' ')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 }
 
 function normalizeForUI(text: string, _indent = 1): string {
@@ -466,7 +458,7 @@ function computeMissing(roleBlockText: string, userFacts: Partial<Record<Questio
   const hasScaleSignal = /\b(tydz|tydzień|tygodniowo|mies|miesięcznie|budżet|spend|pipeline|kampani|ofert|spotkan|lead|zgłosz|ticket|faktur|zespół|osób|klientów|wolumen)\b/i.test(t);
   const hasResultSignal =
     /\b(roas|cac|cpa|ctr|cr|ltv|mrr|arr|przych[oó]d|win rate|konwersj|nps|csat|sla|kpi|roi|marża|błędów|oszczędn|czas|efektywn)\b/i.test(t) ||
-    /\b(wzrost|spadek|poprawa|zwiększ|zmniejsz|skróce|zreduk)\b/i.test(t);
+    /\b(wzrost|spadek|popraw|zwiększ|zmniejsz|skróc|zreduk|optymaliz)/i.test(t);
   const strongActionKeywords = /\b(pozyskiwan|prowadzen|wdroż|optymaliz|negocjac|tworzen|analiz|zarz[aą]dz|obsługa|wsparcie|przygotowywan|współpraca|koordynac|rozwój|budowan|sprzedaż|raportowan|testowan|programowan)\b/i.test(t);
   const actionsOk =
     !!(userFacts.ACTIONS && userFacts.ACTIONS.trim()) ||
