@@ -516,8 +516,11 @@ function inferActiveRoleTitleFromChat(messages: Message[]): string {
     const m = messages[i];
     if (m?.role !== 'assistant') continue;
     const s = String(m.content ?? '');
-    const m1 = s.match(/zaczni(?:j|my)\s+od\s+„(.+?)”/i);
+    
+    // POPRAWKA: Obsługa cudzysłowów polskich „” oraz prostych ""
+    const m1 = s.match(/zaczni(?:j|my)\s+od\s+(?:„|")(.+?)(?:”|")/i);
     if (m1?.[1]) return m1[1].trim();
+    
     const m2 = s.match(/===\s*BEFORE\s*\((.+?)\)\s*===/i);
     if (m2?.[1]) return m2[1].trim();
   }
