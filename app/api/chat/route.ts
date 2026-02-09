@@ -703,7 +703,7 @@ function buildQuestion(kind: QuestionKind, profile: 'BIZ' | 'TECH' | 'SUPPORT'):
 
     case 'RESULT':
       if (profile === 'TECH') {
-        return `Jaki był efekt? Podaj wyniki: np. uptime %, czas wdrożenia, wydajność systemu, brak incydentów.`;
+        return `Jaki był efekt? Podaj wyniki: np. czas wdrożenia, wydajność systemu, brak incydentów.`;
       }
       if (profile === 'SUPPORT') {
         return `Jaki był efekt? Podaj wyniki: np. SLA, CSAT, czas obsługi (AHT), redukcja błędów.`;
