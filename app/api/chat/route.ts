@@ -742,7 +742,10 @@ function buildFirstQuestionForRole(role: RoleItem, fullText: string, messages: M
   const facts = buildUserFactsFromRoleConversation(messages, role.title);
   const missing = computeMissing(roleBlockText, facts);
   const nextQ = pickNextQuestion(missing, state);
+  
   if (!nextQ) return `Mam już wszystko do rewrite. Lecimy.`;
+
+  // POPRAWKA: Wykrywamy profil roli przed zadaniem pytania
   const profile = getRoleProfile(role.title, roleBlockText);
   return buildQuestion(nextQ, profile);
 }
