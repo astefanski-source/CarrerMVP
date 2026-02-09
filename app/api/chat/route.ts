@@ -278,7 +278,7 @@ function findCurrentRoleInHistory(messages: Message[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.role === 'assistant') {
-      const match = m.content.match(/zacznijmy od „([^”]+)”/);
+      const match = m.content.match(/zaczni(?:j|my)\s+od\s+(?:„|")([^”"]+)(?:”|")/i);
       if (match) return match[1];
       const match2 = m.content.match(/bierzemy na warsztat kolejną rolę: ([^|]+)/);
       if (match2) return match2[1].trim();
