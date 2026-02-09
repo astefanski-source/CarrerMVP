@@ -624,9 +624,14 @@ function findRoleStartIndex(messages: Message[], roleTitle: string): number {
     const m = messages[i];
     if (m.role !== 'assistant') continue;
     const s = String(m.content ?? '');
-    if (s.includes(`zaczni`) && s.includes(`„${roleTitle}”`)) return i;
+    
+    // Szukamy frazy "zacznijmy od..." z różnymi cudzysłowami
+    // Używamy escapeRegex(roleTitle), żeby znaki specjalne w nazwie roli nie psuły regexa
+    const regex = new RegExp(`zaczni(?:j|my)\\s+od\\s+["„”']${escapeRegex(roleTitle)}["„”']`, 'i');
+    
+    if (regex.test(s)) return i;
   }
-  return 0;
+  return -1; // Zwracamy -1 jeśli nie znaleziono (ważne dla warunku w buildUserFacts)
 }
 
 function buildUserFactsFromRoleConversation(messages: Message[], roleTitle: string): Partial<Record<QuestionKind, string>> {
