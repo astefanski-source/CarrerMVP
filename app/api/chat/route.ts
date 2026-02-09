@@ -738,7 +738,13 @@ function computeMissingKinds(roleBlockText: string, userFacts: Partial<Record<Qu
   return computeMissing(roleBlockText, userFacts).missing;
 }
 
-function pickNextQuestion(missing: { missing: QuestionKind[]; notes: string[] }, state: { asked: Set<QuestionKind>; declined: Set<QuestionKind> }): QuestionKind | null {
+function pickNextQuestion(
+  missing: { missing: QuestionKind[]; notes: string[] },
+  state: { asked: Set<QuestionKind>; declined: Set<QuestionKind>; askedTotal: number }
+): QuestionKind | null {
+  // MVP: max 4 pytania łącznie na rolę (potem rewrite)
+  if ((state.askedTotal ?? 0) >= 4) return null;
+
   const order: QuestionKind[] = ['ACTIONS', 'SCALE', 'RESULT'];
 
   for (const k of order) {
