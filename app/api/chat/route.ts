@@ -904,20 +904,19 @@ function buildDeterministicFallback(roleTitle: string, beforeText: string, facts
       .replace(/^Udział/i, 'Uczestniczyłem w')
       .trim();
 
-  // 1. NAJPIERW DEFINIUJEMY baseBullets (Kluczowe dla naprawy błędu 500)
+  // FIX: Definiujemy baseBullets NAJPIERW (przed użyciem w aBullets)
   const baseBullets = [
     facts.ACTIONS ? `- ${shorten(facts.ACTIONS)}` : '',
     facts.SCALE ? `- Skala: ${shorten(facts.SCALE)}` : '',
     facts.RESULT ? `- Efekt: ${shorten(facts.RESULT)}` : '',
   ].filter(Boolean);
 
-  // 2. Potem pobieramy zdania z oryginału
+  // Potem pobieramy zdania z oryginału
   const fromBefore = lines.slice(2, 6).map((l) => l.replace(/^\-+\s*/, '').trim()).filter(Boolean);
 
-  // 3. Teraz bezpiecznie łączymy (baseBullets już istnieje)
+  // Teraz bezpiecznie łączymy (baseBullets już istnieje)
   const aBullets = [...baseBullets, ...fromBefore.map((l) => `- ${l}`)].slice(0, 6);
 
-  // 4. Tworzymy wersję B
   const bBullets = aBullets
     .map((b) => `- ${verbify(b.replace(/^- /, '').trim())}`)
     .map((b) => b.replace(/- skala:/i, '- Skala:').replace(/- efekt:/i, '- Efekt:'))
