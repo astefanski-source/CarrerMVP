@@ -291,6 +291,29 @@ function validateRequestBody(raw: any): { ok: true; body: RequestBody } | { ok: 
 /** =========================
  *  Core helpers
  *  ========================= */
+function findCurrentRoleInHistory(messages: Message[]): string {
+  // Przeszukujemy historię od końca, szukając o jaką rolę pytał asystent
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === 'assistant') {
+      const match = m.content.match(/zacznijmy od „([^”]+)”/);
+      if (match) return match[1];
+      const match2 = m.content.match(/bierzemy na warsztat kolejną rolę: ([^|]+)/);
+      if (match2) return match2[1].trim();
+    }
+  }
+  return '';
+}
+
+function extractFactsFromHistory(messages: Message[], roleTitle: string): Partial<Record<QuestionKind, string>> {
+  // UWAGA: W Twoim kodzie masz też funkcję buildUserFactsFromRoleConversation.
+  // Jeśli to ta sama logika, możesz użyć jednej z nich. 
+  // Na potrzeby kompilacji dodajemy tę definicję:
+  const facts: Partial<Record<QuestionKind, string>> = {};
+  // ... (tutaj Twoja logika wyciągania faktów z tekstu) ...
+  return facts;
+}
+
 function getRoleProfile(title: string, text: string): 'BIZ' | 'TECH' | 'SUPPORT' {
   const combined = (title + ' ' + text).toLowerCase();
   if (/\b(dev|software|engineer|test|tech|it|cloud|data|analityk|qa|python|java|system)\b/i.test(combined)) return 'TECH';
