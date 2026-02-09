@@ -149,7 +149,7 @@ export const SAMPLE_CV_TEXTS: string[] = [
 // Sales (celowo: 1. rola ma jakieś liczby, ale wynik miękki → ma pytać o RESULT/CONTEXT; 2. rola prawie same obowiązki → ma pytać o SCALE/RESULT)
 `Specjalista ds. Sprzedaży B2B - ABC Sp. z o.o., Warszawa | 03.2021 – obecnie
 Pozyskiwanie klientów (outbound + inbound), obsługa leadów, prowadzenie rozmów handlowych, przygotowanie ofert i negocjacje. Praca w CRM (pipeline, follow-upy).
-Ok 30–50 pierwszych kontaktów outbound tygodniowo; regularne spotkania z klientami i praca na lejkach sprzedażowych.
+Regularne spotkania z klientami i praca na lejkach sprzedażowych.
 
 Asystent ds. Sprzedaży - Alfa Beta, Warszawa | 01.2020 – 02.2021
 Wsparcie handlowców w bieżącej sprzedaży: przygotowanie ofert, aktualizacja CRM, kontakt z klientami w sprawie dokumentów i ustaleń.`,
@@ -157,8 +157,7 @@ Wsparcie handlowców w bieżącej sprzedaży: przygotowanie ofert, aktualizacja 
 // Marketing (celowo: są metryki performance, ale brak punktu odniesienia → ma pytać o CONTEXT)
 `Specjalista ds. Marketingu Performance - REKLAMOPOL, zdalnie | 06.2022 – 12.2024
 Prowadzenie kampanii Google Ads i Meta Ads: optymalizacja budżetów, kreacji i landingów, testy A/B, raportowanie wyników.
-Miesięczne budżety na poziomie 40–70 tys. zł; równolegle kilkanaście kampanii.
-Wyniki kampanii: ROAS ok. 4.2, CPA ok. 32 zł, CAC ok. 38 zł, CTR ok. 2.3%.
+Odpowiedzialaność za realizację celów KPI: ROAS, CR, CPC oraz budżetu.
 
 Koordynator Social Media - Media Star | 01.2021 – 05.2022
 Planowanie publikacji, przygotowanie treści i harmonogramów, współpraca z grafikiem, moderacja komentarzy i wiadomości.
