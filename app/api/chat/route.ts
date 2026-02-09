@@ -66,17 +66,12 @@ export async function POST(req: NextRequest) {
       (pickBestCvChunkFromMessages(messages) || '')
     );
 
-    // 1. Wykrywamy wybraną rolę (z body lub z historii)
-    const currentRoleFromHistory = findCurrentRoleInHistory(messages);
-    const selectedRoleTitle = selectedFromBody || currentRoleFromHistory;
-
-    // 0) Jeśli user wkleił nowe doświadczenie -> Audyt
-    const lastUserLooksLikeCvPaste = looksLikeExperiencePaste(lastUser);
+    // ANALIZA RÓL
     const doneRoles = extractDoneRoles(messages);
     const allRoles = dedupeRoles(extractRolesFromCvText(cvTextEffective));
-    // Bierzemy max 3 role do MVP
-    const roles = allRoles.slice(0, 3);
+    const roles = allRoles.slice(0, 3); // Max 3 role dla MVP
 
+    // 0. Brak CV -> Instrukcja
     if (!cvTextEffective || roles.length === 0) {
       return NextResponse.json({
         assistantText: normalizeForUI(
@@ -90,79 +85,76 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 1) Jeżeli user odpowiedział "tak" po rewrite i nie ma już ról → komunikat końcowy
+    // 1. CTA: "Chcesz poprawić kolejną rolę?" -> TAK
     if (looksLikeRewriteCta(lastAssistant) && isYes(lastUser)) {
       const remaining = roles.filter((r) => !doneRoles.has(r.title));
       if (remaining.length === 0) {
         return NextResponse.json({
           assistantText: normalizeForUI(
-            `Ok. Przerobiliśmy już wszystkie role, które wkleiłeś. Wklej kolejne stanowisko, a lecimy dalej.`,
+            `Ok. Przerobiliśmy już wszystkie role. Wklej kolejne stanowisko, a lecimy dalej.`,
             1
           ),
         });
       }
-      // lecimy do kolejnej roli (pierwsza nieprzerobiona)
-      const nextRole = remaining[0];
-      return NextResponse.json({
-        assistantText: normalizeForUI(startRoleIntro(nextRole.title) + '\n' + buildFirstQuestionForRole(nextRole, cvTextEffective), 1),
-      });
+      // Automatycznie ustawiamy kolejną rolę jako aktywną
+      // Nie zwracamy tekstu, tylko puszczamy kod dalej, żeby od razu zadał pytanie lub zrobił rewrite
+      // W tym celu musimy zmodyfikować activeRoleTitle poniżej.
     }
 
-    // 2) Jeżeli ostatni assistant prosił o numer roli i user podał numer → start wybranej roli
+    // USTALANIE AKTYWNEJ ROLI (Priorytetowe)
+    let activeRoleTitle = '';
+
+    // A. Czy user wybrał numer? (np. "1")
     if (looksLikeRoleChoicePrompt(lastAssistant)) {
       const idx = parseChoiceIndex(lastUser);
       if (idx != null && idx >= 1 && idx <= roles.length) {
-        const picked = roles[idx - 1];
-        return NextResponse.json({
-          assistantText: normalizeForUI(startRoleIntro(picked.title) + '\n' + buildFirstQuestionForRole(picked, cvTextEffective), 1),
-        });
+        activeRoleTitle = roles[idx - 1].title;
+      } else {
+        // Zły numer -> Pokaż Audyt ponownie
+        return NextResponse.json({ assistantText: normalizeForUI(buildAudit(roles, cvTextEffective), 1) });
       }
-      return NextResponse.json({ assistantText: normalizeForUI(buildAudit(roles, cvTextEffective), 1) });
     }
 
-    // 4) Jeśli last assistant jest CTA albo user wkleił nowe CV → AUDIT
-    if (lastUserLooksLikeCvPaste && !looksLikeRewriteCta(lastAssistant)) {
-      return NextResponse.json({ assistantText: normalizeForUI(buildAudit(roles, cvTextEffective), 1) });
+    // B. Jeśli to CTA "Kolejna rola?" + TAK -> bierzemy pierwszą nieprzerobioną
+    if (!activeRoleTitle && looksLikeRewriteCta(lastAssistant) && isYes(lastUser)) {
+       const remaining = roles.filter((r) => !doneRoles.has(r.title));
+       if (remaining.length > 0) activeRoleTitle = remaining[0].title;
     }
 
-    // 5) Spróbuj ustalić aktywną rolę
-    const activeRoleTitle =
-      inferActiveRoleTitleFromChat(messages) ||
-      roles.find((r) => !doneRoles.has(r.title))?.title ||
-      (selectedFromBody && roles.find((r) => eqRole(r.title, selectedFromBody))?.title) ||
-      '';
-
-    // 6) Jeśli nie mamy aktywnej roli i jest >1 rola → audit + wybór
-    if (!activeRoleTitle && roles.length > 1) {
-      return NextResponse.json({ assistantText: normalizeForUI(buildAudit(roles, cvTextEffective), 1) });
+    // C. Próba ustalenia z historii czatu
+    if (!activeRoleTitle) {
+      activeRoleTitle = inferActiveRoleTitleFromChat(messages);
     }
 
-    // 7) Jeśli jest tylko 1 rola i nie przerobiona → start roli
+    // D. Jeśli jest tylko 1 rola w CV i nie przerobiona -> to ona jest aktywna
     if (!activeRoleTitle && roles.length === 1 && !doneRoles.has(roles[0].title)) {
-      const r = roles[0];
-      return NextResponse.json({
-        assistantText: normalizeForUI(startRoleIntro(r.title) + '\n' + buildFirstQuestionForRole(r, cvTextEffective), 1),
-      });
+      activeRoleTitle = roles[0].title;
     }
 
-    // 8) Jeśli aktywna rola jest już przerobiona, a nie jesteśmy po CTA → audit
-    if (activeRoleTitle && doneRoles.has(activeRoleTitle)) {
-      return NextResponse.json({ assistantText: normalizeForUI(buildAudit(roles, cvTextEffective), 1) });
+    // JEŚLI NADAL BRAK ROLI -> POKAŻ AUDYT (Wybór roli)
+    if (!activeRoleTitle || (activeRoleTitle && doneRoles.has(activeRoleTitle))) {
+       // Chyba że user właśnie wkleił CV (lastUserLooksLikeCvPaste), wtedy zawsze Audyt
+       return NextResponse.json({ assistantText: normalizeForUI(buildAudit(roles, cvTextEffective), 1) });
     }
 
-    // 9) Przetwarzamy aktywną rolę: pytania -> rewrite
+    // ==========================================
+    // GŁÓWNA LOGIKA: PYTANIE vs REWRITE
+    // ==========================================
     const activeRole = roles.find((r) => eqRole(r.title, activeRoleTitle)) || roles[0];
     const roleBlockText = preprocessCvSource(extractRoleBlock(cvTextEffective, activeRole.title) || activeRole.headerLine);
+    
+    // Resetujemy stan pytań dla nowej roli (chyba że już o nią pytaliśmy)
+    const alreadyStarted = findRoleStartIndex(messages, activeRole.title) > 0;
     const state = computeRoleState(messages, activeRole.title);
     const userFacts = buildUserFactsFromRoleConversation(messages, activeRole.title);
 
-    // 1. NAJPIERW OBLICZAMY BRAKI
+    // 1. BRAKI
     const { missing, notes } = computeMissing(roleBlockText, userFacts);
 
-    // 2. POTEM DECYDUJEMY O PYTANIU
+    // 2. CZY PYTAĆ?
     const nextQ = pickNextQuestion({ missing, notes }, state);
     
-    // Sprawdzamy czy user nie odmówił odpowiedzi NAJPIERW
+    // Sprawdź czy user nie odmówił (Decline)
     const lastAskedKind = inferLastAskedKind(lastAssistant);
     const lastUserRaw = String(messages[messages.length - 1]?.content ?? '');
     const userDeclined = looksLikeDeclineAnswer(lastUserRaw);
@@ -173,6 +165,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ assistantText: normalizeForUI(followup, 1) });
     }
 
+    // JEŚLI MAMY PYTANIE -> ZADAJ JE
     if (nextQ) {
       const profile = getRoleProfile(activeRole.title, roleBlockText);
       let examples = "";
@@ -194,15 +187,17 @@ export async function POST(req: NextRequest) {
         questionText = "W opisie brakuje Twojej bezpośredniej sprawczości. Co dokładnie należało do Twoich zadań, za które brałeś pełną odpowiedzialność?";
       }
 
-      const alreadyStartedThisRole = findRoleStartIndex(messages, activeRole.title) > 0;
-      const intro = alreadyStartedThisRole ? '' : `Ok, w takim razie zacznijmy od „${activeRole.title}”.\n\n`;
+      // Jeśli to pierwsze pytanie dla tej roli, dodaj intro
+      const intro = alreadyStarted ? '' : `Ok, w takim razie zacznijmy od „${activeRole.title}”.\n\n`;
 
       return NextResponse.json({
         assistantText: normalizeForUI(`${intro}${questionText}`, 1),
       });
     }
 
-    // 3. JEŚLI NIE MA PYTAŃ - REWRITE
+    // 3. JEŚLI NIE MA PYTAŃ -> NATYCHMIASTOWY REWRITE
+    // (Tu trafiamy od razu, jeśli nextQ jest null - bez etapu "Lecimy")
+    
     const factsText = preprocessCvSource(
       [
         userFacts.ACTIONS ? `ACTIONS: ${userFacts.ACTIONS}` : '',
@@ -231,19 +226,15 @@ export async function POST(req: NextRequest) {
     if (out) {
       out = enforceHeadersAndBullets(out, activeRole.title, roleBlockText);
       out = normalizeForUI(out, 1);
-
-      // ZŁAGODZONA WALIDACJA DLA MVP:
-      const invalid =
-        !rewriteLooksValid(out, activeRole.title) ||
-        hasBadArtifacts(out); 
-        // WYŁĄCZONE: rewriteVersionsIdentical(out) - niech będą takie same, jeśli model tak chce
-        // WYŁĄCZONE: hasUnverifiedNumbers(out, allowedFacts) - to blokowało dobre odpowiedzi
+      
+      const invalid = !rewriteLooksValid(out, activeRole.title) || hasBadArtifacts(out); 
 
       if (!invalid) {
         return NextResponse.json({ assistantText: out });
       }
     }
 
+    // Fallback
     const fallback = buildDeterministicFallback(activeRole.title, roleBlockText, userFacts);
     const fallbackOut = normalizeForUI(fallback, 1);
     return NextResponse.json({ assistantText: fallbackOut });
