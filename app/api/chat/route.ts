@@ -91,7 +91,7 @@ export async function POST(req: NextRequest) {
       if (remaining.length === 0) {
         return NextResponse.json({
           assistantText: normalizeForUI(
-            `Ok. Przerobiliśmy już wszystkie role. Wklej kolejne stanowisko, a lecimy dalej.`,
+            `Ok. Przerobiliśmy już wszystkie role. Wklej kolejne stanowisko, i lecimy dalej.`,
             1
           ),
         });
